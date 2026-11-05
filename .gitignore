@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.vscode/
+.idea/
+*.egg-info/
+dist/
+build/
+models/*.joblib
+color_scale.pdf
+data/tvdi_backup.sql
+*.docx

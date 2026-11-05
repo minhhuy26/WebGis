@@ -1,0 +1,24 @@
+# === Backend ===
+fastapi
+uvicorn[standard]
+python-dotenv
+httpx
+
+# === Database (PostgreSQL + PostGIS) ===
+psycopg2-binary
+sqlalchemy
+geoalchemy2
+
+# === Data & Geospatial ===
+pandas
+geopandas
+shapely
+numpy
+scipy
+
+# === AI / Machine Learning ===
+scikit-learn
+joblib
+
+# === Google Earth Engine (lớp ảnh Landsat 30 m trực tiếp – tùy chọn) ===
+earthengine-api

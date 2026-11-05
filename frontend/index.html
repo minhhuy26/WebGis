@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGIS Giám sát & Dự báo Chỉ số Khô hạn TVDI – TP. Hồ Chí Minh</title>
+
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- MapLibre GL CSS (Bản đồ 3D) -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <!-- Custom CSS (v12.0) -->
+    <link rel="stylesheet" href="/static/css/style.css?v=12.0">
+</head>
+<body>
+    <!-- Header -->
+    <header class="app-header">
+        <div class="header-left">
+            <div class="logo-icon"><i class="fa-solid fa-earth-asia"></i></div>
+            <div class="header-titles">
+                <h1>WebGIS Giám sát &amp; Dự báo Khô hạn TVDI</h1>
+                <span class="header-sub">TP. Hồ Chí Minh mở rộng · Landsat 8/9 · Random Forest</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <!-- Trạng thái máy chủ cơ sở dữ liệu PostGIS (Chỉ Quản trị viên) -->
+            <div class="system-status" id="system-status" style="display: none;" title="Trạng thái máy chủ cơ sở dữ liệu PostGIS (Chỉ Quản trị viên)">
+                <span class="status-dot"></span>
+                <span class="status-text">Đang kết nối PostGIS...</span>
+            </div>
+
+            <!-- Xuất báo cáo -->
+            <button id="btn-open-report" class="btn btn-header-ghost" title="Xuất báo cáo thống kê hạn hán PDF / Excel">
+                <i class="fa-solid fa-file-arrow-down"></i>
+                <span>Báo cáo</span>
+            </button>
+
+            <!-- Menu người dùng với Cài đặt & Đăng xuất (Chỉ hiển thị khi đã đăng nhập) -->
+            <div class="user-menu-wrapper" id="user-menu-wrapper" style="display: none;">
+                <button class="btn-user-profile" id="btn-user-profile" title="Tùy chọn tài khoản và cài đặt">
+                    <span id="badge-role-text" class="badge-role user">
+                        <i class="fa-solid fa-user-check"></i> <span id="header-user-name">xyz</span>
+                    </span>
+                    <i class="fa-solid fa-chevron-down user-dropdown-caret"></i>
+                </button>
+
+                <!-- Dropdown Menu Người dùng -->
+                <div class="user-dropdown-menu" id="user-dropdown-menu" style="display: none;">
+                    <div class="user-dropdown-header">
+                        <div class="user-dropdown-avatar" id="user-dropdown-avatar">
+                            <i class="fa-solid fa-user-check"></i>
+                        </div>
+                        <div class="user-dropdown-info">
+                            <div class="user-dropdown-name" id="user-dropdown-name">xyz</div>
+                            <div class="user-dropdown-role" id="user-dropdown-role">Người dùng</div>
+                        </div>
+                    </div>
+
+                    <div class="user-dropdown-divider"></div>
+
+                    <div class="user-dropdown-section-title">
+                        <i class="fa-solid fa-sliders"></i> Cài đặt & Tiện ích
+                    </div>
+
+                    <div class="user-dropdown-items">
+                        <button class="dropdown-item" id="btn-open-change-pwd">
+                            <i class="fa-solid fa-key"></i>
+                            <span>Đổi mật khẩu tài khoản</span>
+                        </button>
+
+                        <label class="dropdown-item-toggle" for="chk-setting-alerts">
+                            <div class="item-toggle-label">
+                                <i class="fa-solid fa-bell"></i>
+                                <span>Cảnh báo hạn hán (TVDI > 0.8)</span>
+                            </div>
+                            <span class="switch-sm">
+                                <input type="checkbox" id="chk-setting-alerts" checked>
+                                <span class="slider-sm"></span>
+                            </span>
+                        </label>
+
+                        <label class="dropdown-item-toggle" for="chk-setting-sound">
+                            <div class="item-toggle-label">
+                                <i class="fa-solid fa-volume-high"></i>
+                                <span>Âm thanh cảnh báo</span>
+                            </div>
+                            <span class="switch-sm">
+                                <input type="checkbox" id="chk-setting-sound" checked>
+                                <span class="slider-sm"></span>
+                            </span>
+                        </label>
+
+                        <!-- Tiện ích Admin -->
+                        <div id="admin-dropdown-tools" style="display: none;">
+                            <div class="user-dropdown-divider"></div>
+                            <div class="user-dropdown-section-title" style="color: #16a34a;">
+                                <i class="fa-solid fa-shield-halved"></i> Quản trị viên
+                            </div>
+                            <button class="dropdown-item" id="btn-dropdown-users">
+                                <i class="fa-solid fa-users-gear" style="color: #0284c7;"></i>
+                                <span>Quản lý người dùng & Nhật ký</span>
+                            </button>
+                            <button class="dropdown-item" id="btn-dropdown-gee">
+                                <i class="fa-solid fa-satellite"></i>
+                                <span>Cấu hình Google Earth Engine</span>
+                                <span id="gee-dropdown-badge" style="margin-left: auto; font-size: 0.7rem; padding: 2px 7px; border-radius: 10px; background: rgba(34, 197, 94, 0.15); color: #16a34a; font-weight: 600;">Đã kết nối</span>
+                            </button>
+                            <button class="dropdown-item" id="btn-dropdown-retrain">
+                                <i class="fa-solid fa-brain"></i>
+                                <span>Huấn luyện lại mô hình AI</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="user-dropdown-divider"></div>
+
+                    <button class="dropdown-item dropdown-logout" id="btn-dropdown-logout" title="Đăng xuất khỏi tài khoản">
+                        <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                        <span>Đăng xuất</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Nút Đăng nhập / Đăng ký -->
+            <button id="btn-auth-action" class="btn btn-auth" title="Đăng nhập tài khoản Người dùng hoặc Quản trị viên">
+                <i class="fa-solid fa-right-to-bracket" id="auth-icon"></i>
+                <span id="auth-btn-label">Đăng nhập</span>
+            </button>
+            <button id="btn-auth-register" class="btn btn-auth-register" title="Đăng ký tài khoản Người dùng mới">
+                <i class="fa-solid fa-user-plus"></i>
+                <span>Đăng ký</span>
+            </button>
+
+            <!-- Toggle Mobile -->
+            <button id="btn-mobile-sidebar-toggle" class="btn btn-mobile-toggle" style="display: none;" title="Mở/Đóng Bảng phân tích">
+                <i class="fa-solid fa-chart-pie"></i>
+                <span>Bảng số liệu</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Thanh điều khiển thời gian (1 hàng): chế độ · mốc thời gian · trình chiếu · tìm kiếm -->
+    <section class="toolbar">
+        <div class="seg-control mode-seg" role="group" aria-label="Chế độ dữ liệu">
+            <button id="btn-mode-monitor" class="seg-btn" title="Ảnh viễn thám thực tế Landsat 8/9 (2017–2025)">
+                <i class="fa-solid fa-satellite"></i> Giám sát
+            </button>
+            <button id="btn-mode-forecast" class="seg-btn active" title="Dự báo khô hạn TVDI bằng mô hình Random Forest">
+                <i class="fa-solid fa-wand-magic-sparkles"></i> Dự báo AI
+            </button>
+        </div>
+
+        <span class="tb-divider"></span>
+
+        <div class="time-control">
+            <button type="button" id="btn-toolbar-prev" class="tc-step" title="Kỳ trước">
+                <i class="fa-solid fa-chevron-left"></i>
+            </button>
+            <label class="tc-date" title="Chọn ngày bất kỳ (2017 – 2027)">
+                <i class="fa-regular fa-calendar"></i>
+                <input type="date" id="toolbar-date-picker" min="2017-01-01" max="2027-12-31" />
+            </label>
+            <select id="date-select" class="tc-cycle" title="Chọn nhanh một kỳ 15 ngày trong năm"></select>
+            <button type="button" id="btn-toolbar-next" class="tc-step" title="Kỳ sau">
+                <i class="fa-solid fa-chevron-right"></i>
+            </button>
+        </div>
+
+        <select id="aggregation-select" class="tb-select" title="Cách tổng hợp ảnh quan trắc Landsat (2017–2025)">
+            <option value="cycle">Theo kỳ 15 ngày</option>
+            <option value="month">TB tháng</option>
+            <option value="year">TB năm</option>
+            <option value="period">TB 2017–2025</option>
+        </select>
+
+        <span class="tb-divider"></span>
+
+        <div class="play-control">
+            <button id="btn-anim-play" class="btn-play" title="Tự động chuyển lần lượt các kỳ để xem diễn biến theo thời gian">
+                <i class="fa-solid fa-play"></i> <span id="anim-btn-label">Trình chiếu</span>
+            </button>
+            <select id="anim-speed-select" class="tb-select tb-select-sm" title="Tốc độ trình chiếu">
+                <option value="2000">Chậm</option>
+                <option value="1200" selected>Vừa</option>
+                <option value="600">Nhanh</option>
+            </select>
+        </div>
+
+        <!-- Tìm nhanh 167 phường / xã -->
+        <div class="ward-search" id="ward-search-container">
+            <i class="fa-solid fa-magnifying-glass ward-search-icon"></i>
+            <input type="text" id="global-ward-search-input" placeholder="Tìm phường, xã…" autocomplete="off" spellcheck="false" />
+            <kbd class="ward-search-kbd" title="Nhấn / để tìm nhanh">/</kbd>
+            <button type="button" id="btn-clear-ward-search" class="ward-search-clear" style="display: none;" title="Xóa tìm kiếm"><i class="fa-solid fa-xmark"></i></button>
+            <div id="ward-search-dropdown" class="ward-search-dropdown" style="display: none;"></div>
+        </div>
+    </section>
+
+    <!-- Main Workspace (Chiếm trọn màn hình, bản đồ chủ đạo) -->
+    <div class="workspace">
+        <!-- Map Container -->
+        <div class="map-container" id="map-container">
+            <!-- 2D Leaflet Map -->
+            <div id="map"></div>
+
+            <!-- 3D MapLibre Container (Bản đồ 3D) -->
+            <div id="map-3d-container"></div>
+
+            <!-- Bảng lớp bản đồ: chỉ số · kiểu hiển thị · 2D/3D · bản đồ nền -->
+            <div class="map-dock" id="map-dock">
+                <button type="button" class="dock-head" id="btn-dock-toggle" title="Thu gọn / mở rộng bảng lớp bản đồ">
+                    <span><i class="fa-solid fa-layer-group"></i> Lớp bản đồ</span>
+                    <i class="fa-solid fa-chevron-up dock-caret"></i>
+                </button>
+                <div class="dock-body">
+                    <div class="seg-control seg-block" id="index-switch" role="group" aria-label="Chọn lớp chỉ số">
+                        <button type="button" class="seg-btn seg-lst" data-index="lst" title="Nhiệt độ bề mặt đất LST (°C)">
+                            <i class="fa-solid fa-temperature-half"></i> LST
+                        </button>
+                        <button type="button" class="seg-btn seg-ndvi" data-index="ndvi" title="Chỉ số thực vật NDVI">
+                            <i class="fa-solid fa-leaf"></i> NDVI
+                        </button>
+                        <button type="button" class="seg-btn seg-tvdi active" data-index="tvdi" title="Chỉ số khô hạn thực vật TVDI">
+                            <i class="fa-solid fa-droplet"></i> TVDI
+                        </button>
+                    </div>
+
+                    <div class="dock-row">
+                        <div class="seg-control" id="display-switch" role="group" aria-label="Kiểu hiển thị">
+                            <button type="button" class="seg-btn active" data-display="pixel" title="Ảnh pixel ~120 m (cắt theo ranh giới)">
+                                <i class="fa-solid fa-table-cells"></i> Pixel
+                            </button>
+                            <button type="button" class="seg-btn" data-display="ward" title="Tô màu theo giá trị từng phường/xã">
+                                <i class="fa-solid fa-draw-polygon"></i> Phường
+                            </button>
+                        </div>
+                        <div class="seg-control" role="group" aria-label="Chế độ xem">
+                            <button type="button" id="btn-view-2d" class="seg-btn active" title="Bản đồ phẳng 2D">2D</button>
+                            <button type="button" id="btn-view-3d" class="seg-btn" title="Bản đồ 3D: khối cao theo giá trị chỉ số">3D</button>
+                        </div>
+                    </div>
+
+                    <!-- Điều khiển 3D (chỉ hiện khi xem 3D) -->
+                    <div id="map-3d-controls" class="dock-3d" style="display: none;">
+                        <label for="range-3d-exag">Độ cao khối <strong>×<span id="val-3d-exag">1.0</span></strong></label>
+                        <input type="range" id="range-3d-exag" min="0.3" max="3" step="0.1" value="1" title="Hệ số phóng đại chiều cao">
+                        <div class="dock-3d-btns">
+                            <button id="btn-3d-rotate" class="dock-chip" title="Tự động xoay quanh khu vực nghiên cứu"><i class="fa-solid fa-rotate"></i> Xoay</button>
+                            <button id="btn-3d-reset-cam" class="dock-chip" title="Đặt lại góc nhìn camera 3D"><i class="fa-solid fa-video"></i> Góc nhìn</button>
+                        </div>
+                        <div class="dock-hint">Chuột phải / Ctrl + kéo để xoay, nghiêng</div>
+                    </div>
+
+                    <div class="basemap-switch" id="basemap-switch" role="group" aria-label="Bản đồ nền"></div>
+
+                    <button type="button" class="dock-more" id="btn-unified-layers" title="Độ trong suốt, ranh giới, lưới tọa độ, dải màu">
+                        <i class="fa-solid fa-sliders"></i> Tùy chỉnh hiển thị
+                        <i class="fa-solid fa-chevron-right dock-more-caret"></i>
+                    </button>
+                </div>
+                <div class="unified-layers-panel collapsed" id="unified-layers-panel"></div>
+            </div>
+
+            <!-- Khung tiêu đề bản đồ -->
+            <div class="map-title-card" id="map-title-card">
+                <div class="map-title-main" id="map-title-main">BẢN ĐỒ CHỈ SỐ KHÔ HẠN (TVDI) TP. HỒ CHÍ MINH</div>
+                <div class="map-title-sub" id="map-title-sub">Đang tải dữ liệu...</div>
+            </div>
+
+            <!-- Nhãn lưới tọa độ (kinh độ / vĩ độ) quanh khung bản đồ -->
+            <div class="graticule-labels" id="graticule-labels"></div>
+
+            <!-- Thông tin nguồn dữ liệu -->
+            <div class="map-info-panel" id="map-info-panel" style="display: none;">
+                <div class="map-info-header">
+                    <span><i class="fa-solid fa-circle-info"></i> Thông tin dữ liệu bản đồ</span>
+                    <button type="button" class="btn-card-toggle" id="btn-close-map-info" title="Đóng"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <ul>
+                    <li><strong>Ảnh vệ tinh:</strong> Landsat 8/9 Collection 2 Level-2 (USGS), lọc mây bằng QA_PIXEL.</li>
+                    <li><strong>Chỉ số:</strong> LST (°C) từ kênh nhiệt ST_B10; NDVI từ SR_B5, SR_B4; TVDI từ không gian LST–NDVI (biên khô – biên ướt).</li>
+                    <li><strong>Lớp Pixel:</strong> ảnh tổng hợp tháng ~120 m xuất từ Google Earth Engine. Kỳ không có ảnh tháng và mốc dự báo: lưới ~5,5 km (283 ô, PostGIS) chi tiết hóa 120 m theo mẫu không gian Landsat cùng tháng.</li>
+                    <li><strong>Phường/Xã:</strong> 167 phường, xã đất liền theo ranh giới ĐVHC cấp xã 2025 (Nghị quyết 1685/NQ-UBTVQH15).</li>
+                    <li><strong>Dự báo:</strong> mô hình Random Forest (scikit-learn) – chỉ dự báo chỉ số TVDI.</li>
+                </ul>
+            </div>
+
+            <!-- Nhãn đang trình chiếu -->
+            <div id="anim-hud-badge" class="anim-hud-badge" style="display: none;">
+                <span class="anim-pulse-dot"></span>
+                <span id="anim-hud-text">Đang trình chiếu</span>
+            </div>
+
+            <!-- Chú giải bản đồ (Bottom-Left): thang màu liên tục + bảng phân cấp chi tiết -->
+            <div class="map-legend" id="map-legend">
+                <div class="legend-header">
+                    <div class="legend-header-left">
+                        <span class="legend-title" id="legend-title"><i class="fa-solid fa-droplet"></i> TVDI – Chỉ số khô hạn thực vật</span>
+                    </div>
+                    <span class="legend-badge" id="legend-badge">pixel 120 m</span>
+                    <button id="btn-toggle-legend" class="btn-card-toggle" title="Xem bảng phân cấp chi tiết">
+                        <i class="fa-solid fa-chevron-up"></i>
+                    </button>
+                </div>
+                <div class="legend-gradient" id="legend-gradient"></div>
+                <div class="legend-ticks" id="legend-ticks"></div>
+                <div class="legend-ends">
+                    <span id="legend-low">◀ Ẩm</span>
+                    <span id="legend-high">Khô hạn ▶</span>
+                </div>
+                <div class="legend-nodata">
+                    <span class="legend-nodata-swatch"></span>
+                    <span>Không có dữ liệu (mây che phủ)</span>
+                </div>
+                <div class="legend-body" id="legend-body"></div>
+            </div>
+
+            <!-- Floating Button toggle Sidebar cho Mobile -->
+            <button id="fab-mobile-sheet" class="fab-mobile-sheet" style="display: none;" title="Bật/Tắt bảng phân tích">
+                <i class="fa-solid fa-chart-pie"></i>
+                <span>Xem phân tích</span>
+            </button>
+        </div>
+
+        <!-- Right Sidebar (Phân thành 2 tab: Phân tích & 167 Phường) -->
+        <aside class="sidebar" id="app-sidebar">
+            <div class="mobile-sheet-handle" id="mobile-sheet-handle" style="display: none;">
+                <span class="handle-bar"></span>
+                <div class="handle-title">
+                    <i class="fa-solid fa-chart-pie"></i>
+                    <span>Bảng phân tích khô hạn TVDI</span>
+                    <i class="fa-solid fa-chevron-up handle-icon" id="handle-icon"></i>
+                </div>
+            </div>
+
+            <!-- Sidebar Navigation Tabs -->
+            <div class="sidebar-tab-nav">
+                <button id="nav-tab-stats" class="sidebar-tab-btn active">
+                    <i class="fa-solid fa-chart-line"></i> Tổng quan
+                </button>
+                <button id="nav-tab-wards" class="sidebar-tab-btn">
+                    <i class="fa-solid fa-city"></i> Phường / Xã
+                    <span class="tab-badge" id="tab-wards-count">167</span>
+                </button>
+                <button id="nav-tab-analysis" class="sidebar-tab-btn">
+                    <i class="fa-solid fa-chart-column"></i> Biểu đồ
+                </button>
+            </div>
+
+            <!-- TAB 1: PHÂN TÍCH & BIỂU ĐỒ -->
+            <div id="sidebar-stats-view" class="sidebar-tab-content active">
+                <!-- Card 1: Selected Cell Details -->
+                <div class="sidebar-card" id="cell-detail-card">
+                    <div class="card-body" id="cell-detail-content">
+                        <div class="empty-state">
+                            <i class="fa-solid fa-hand-pointer"></i>
+                            <p>Nhấp vào bản đồ hoặc tìm một phường/xã để xem chỉ số và diễn biến theo thời gian.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card 2: Regional Statistics Summary -->
+                <div class="sidebar-card" id="stats-summary-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-chart-pie"></i> Thống kê toàn vùng</h3>
+                        <span class="stats-period-tag" id="stats-period-tag">--</span>
+                    </div>
+                    <div class="card-body">
+                        <!-- Giá trị trung bình 3 chỉ số (nhấp để đổi lớp bản đồ) -->
+                        <div class="index-cards" id="index-cards">
+                            <button type="button" class="index-card idx-lst" data-index="lst" title="Hiển thị lớp LST trên bản đồ">
+                                <span class="index-card-name"><i class="fa-solid fa-temperature-half"></i> LST</span>
+                                <span class="index-card-val"><span id="card-val-lst">--</span><small>°C</small></span>
+                                <span class="index-card-sub" id="card-sub-lst">TB toàn vùng</span>
+                            </button>
+                            <button type="button" class="index-card idx-ndvi" data-index="ndvi" title="Hiển thị lớp NDVI trên bản đồ">
+                                <span class="index-card-name"><i class="fa-solid fa-leaf"></i> NDVI</span>
+                                <span class="index-card-val"><span id="card-val-ndvi">--</span></span>
+                                <span class="index-card-sub" id="card-sub-ndvi">TB toàn vùng</span>
+                            </button>
+                            <button type="button" class="index-card idx-tvdi active" data-index="tvdi" title="Hiển thị lớp TVDI trên bản đồ">
+                                <span class="index-card-name"><i class="fa-solid fa-droplet"></i> TVDI</span>
+                                <span class="index-card-val"><span id="card-val-tvdi">--</span></span>
+                                <span class="index-card-sub" id="card-sub-tvdi">TB toàn vùng</span>
+                            </button>
+                        </div>
+
+                        <!-- Tỷ lệ diện tích bị hạn -->
+                        <div class="drought-share">
+                            <span><i class="fa-solid fa-triangle-exclamation"></i> Diện tích bị hạn <small>(TVDI ≥ 0.625)</small></span>
+                            <strong id="metric-drought-percent">--%</strong>
+                        </div>
+
+                        <!-- Breakdown by Drought Classes -->
+                        <h4 class="sub-heading">Phân bố 8 cấp khô hạn</h4>
+                        <div class="drought-breakdown" id="drought-breakdown-list">
+                            <p class="loading-text">Đang tải thống kê...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card 3: Time Series Chart -->
+                <div class="sidebar-card chart-card">
+                    <div class="card-header">
+                        <div class="chart-title-group">
+                            <h3><i class="fa-solid fa-chart-area"></i> <span id="chart-card-title">Chuỗi thời gian TVDI</span></h3>
+                        </div>
+                        <div class="chart-tab-buttons">
+                            <button id="tab-cell-chart" class="tab-btn">Điểm chọn</button>
+                            <button id="tab-overall-chart" class="tab-btn active">Toàn vùng</button>
+                        </div>
+                    </div>
+                    <div class="card-body chart-body">
+                        <div class="chart-mode-segmented">
+                            <button id="btn-mode-15days" class="chart-mode-btn active" title="Dự báo chu kỳ 15 ngày liên tiếp (Realtime)">
+                                <i class="fa-solid fa-bolt"></i> Dự báo 15 ngày
+                            </button>
+                            <button id="btn-mode-history" class="chart-mode-btn" title="Chuỗi quan sát viễn thám thực tế 2017–2025 của chỉ số đang chọn (LST / NDVI / TVDI)">
+                                <i class="fa-solid fa-clock-rotate-left"></i> Lịch sử 2017–2025
+                            </button>
+                            <button id="btn-mode-compare" class="chart-mode-btn" title="So sánh TVDI thực tế (Landsat) và giá trị dự báo của mô hình Random Forest">
+                                <i class="fa-solid fa-code-compare"></i> Thực tế vs AI
+                            </button>
+                        </div>
+
+                        <div class="chart-location-bar" id="chart-location-bar" style="display: none;">
+                            <div class="chart-loc-left">
+                                <i class="fa-solid fa-location-dot loc-pin"></i>
+                                <span class="loc-text" id="chart-loc-name">Toàn vùng TP.HCM</span>
+                            </div>
+                            <div class="chart-loc-range" id="chart-loc-range">
+                                <span id="chart-range-text">15 ngày</span>
+                            </div>
+                        </div>
+
+                        <div class="chart-stats-grid" id="chart-quick-stats" style="display: none;">
+                            <div class="stat-pill stat-pill-avg">
+                                <span class="stat-pill-label">Trung bình</span>
+                                <strong class="stat-pill-val" id="stat-tvdi-avg">--</strong>
+                            </div>
+                            <div class="stat-pill stat-pill-max">
+                                <span class="stat-pill-label">Cao nhất</span>
+                                <strong class="stat-pill-val" id="stat-tvdi-max">--</strong>
+                            </div>
+                            <div class="stat-pill stat-pill-min">
+                                <span class="stat-pill-label">Thấp nhất</span>
+                                <strong class="stat-pill-val" id="stat-tvdi-min">--</strong>
+                            </div>
+                            <div class="stat-pill stat-pill-trend" id="stat-tvdi-trend-wrapper">
+                                <span class="stat-pill-label">Xu hướng</span>
+                                <strong class="stat-pill-val" id="stat-tvdi-trend">--</strong>
+                            </div>
+                        </div>
+
+                        <div class="chart-canvas-container">
+                            <canvas id="timeSeriesChart"></canvas>
+                        </div>
+                        <p id="chart-hint" class="chart-hint">Nhấp vào một điểm trên bản đồ hoặc chọn "Toàn vùng" để xem chuỗi thời gian.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 2: DANH SÁCH & BỘ LỌC 167 PHƯỜNG / XÃ (Yêu cầu 1 & 2) -->
+            <div id="sidebar-wards-view" class="sidebar-tab-content" style="display: none;">
+                <div class="sidebar-card wards-card">
+                    <div class="card-body wards-card-body">
+                        <!-- 1. Tìm trong bảng & xuất CSV -->
+                        <div class="wards-search-bar">
+                            <div class="search-input-wrapper">
+                                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                                <input type="text" id="ward-search-input" class="search-input" placeholder="Lọc theo tên phường, xã…">
+                            </div>
+                            <div class="match-count-badge">
+                                <span id="wards-matched-count">167</span>/167
+                            </div>
+                            <button type="button" id="btn-export-wards-csv" class="btn-wards-export" title="Tải bảng xếp hạng phường/xã đang hiển thị (CSV UTF-8)">
+                                <i class="fa-solid fa-file-csv"></i>
+                            </button>
+                        </div>
+
+                        <!-- 2. Sắp xếp theo chỉ số -->
+                        <div class="seg-control seg-block wards-sort" role="group" aria-label="Sắp xếp">
+                            <button id="btn-sort-lst" class="seg-btn btn-sort active" title="Nhiệt độ bề mặt LST từ cao xuống thấp">
+                                <i class="fa-solid fa-temperature-half"></i> LST ↓
+                            </button>
+                            <button id="btn-sort-ndvi" class="seg-btn btn-sort" title="Chỉ số thực vật NDVI từ thấp đến cao (ít cây xanh nhất)">
+                                <i class="fa-solid fa-leaf"></i> NDVI ↑
+                            </button>
+                            <button id="btn-sort-tvdi" class="seg-btn btn-sort" title="Chỉ số khô hạn TVDI từ cao xuống thấp">
+                                <i class="fa-solid fa-droplet"></i> TVDI ↓
+                            </button>
+                        </div>
+
+                        <!-- 3. Lọc theo ngưỡng (thu gọn mặc định) -->
+                        <details class="threshold-filter-box">
+                            <summary class="threshold-header">
+                                <span><i class="fa-solid fa-filter"></i> Lọc theo ngưỡng chỉ số</span>
+                                <i class="fa-solid fa-chevron-down threshold-caret"></i>
+                            </summary>
+                            <div class="threshold-grid">
+                                <div class="threshold-item">
+                                    <label for="thresh-lst">LST (&deg;C) &gt;</label>
+                                    <input type="number" id="thresh-lst" class="thresh-input" placeholder="40" step="0.5" min="20" max="50">
+                                </div>
+                                <div class="threshold-item">
+                                    <label for="thresh-tvdi">TVDI &ge;</label>
+                                    <input type="number" id="thresh-tvdi" class="thresh-input" placeholder="0.60" step="0.05" min="0" max="1.0">
+                                </div>
+                                <div class="threshold-item">
+                                    <label for="thresh-ndvi">NDVI &le;</label>
+                                    <input type="number" id="thresh-ndvi" class="thresh-input" placeholder="0.25" step="0.05" min="-1" max="1.0">
+                                </div>
+                            </div>
+                            <div class="quick-presets">
+                                <button class="btn-preset" data-lst="40">LST &gt; 40°C</button>
+                                <button class="btn-preset" data-tvdi="0.625">Hạn TVDI &ge; 0.625</button>
+                                <button class="btn-preset" data-ndvi="0.25">NDVI &le; 0.25</button>
+                            </div>
+                            <div class="threshold-actions">
+                                <button id="btn-reset-filters" class="btn-link-reset" title="Bỏ lọc, hiện lại toàn bộ 167 phường">
+                                    <i class="fa-solid fa-rotate-left"></i> Đặt lại
+                                </button>
+                                <button id="btn-apply-filters" class="btn btn-sm btn-filter-apply">
+                                    <i class="fa-solid fa-check"></i> Áp dụng
+                                </button>
+                            </div>
+                        </details>
+                        <div class="wards-source-note" id="wards-source-note" style="display: none;"></div>
+
+                        <!-- 4. Bảng danh sách 167 Phường -->
+                        <div class="wards-table-wrapper">
+                            <table class="wards-table" id="wards-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 10%;">#</th>
+                                        <th style="width: 40%;">Phường / Xã</th>
+                                        <th style="width: 18%;" class="text-right">LST (°C)</th>
+                                        <th style="width: 14%;" class="text-right">NDVI</th>
+                                        <th style="width: 18%;" class="text-right">TVDI</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="wards-table-body">
+                                    <tr>
+                                        <td colspan="5" style="text-align: center; padding: 20px; color: #64748b;">
+                                            <i class="fa-solid fa-spinner fa-spin"></i> Đang tải dữ liệu 167 phường...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="wards-table-hint">
+                            <i class="fa-solid fa-location-crosshairs"></i> Nhấp vào hàng để định vị vị trí phường trên bản đồ.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 3: BIỂU ĐỒ PHÂN TÍCH NÂNG CAO (theo mốc thời gian & chỉ số đang hiển thị) -->
+            <div id="sidebar-analysis-view" class="sidebar-tab-content" style="display: none;">
+                <div class="analysis-context" id="analysis-context">--</div>
+
+                <div class="sidebar-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-circle-nodes"></i> Không gian LST – NDVI (tam giác TVDI)</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="analysis-canvas analysis-canvas-tall"><canvas id="chart-scatter"></canvas></div>
+                        <p class="analysis-note" id="scatter-note"></p>
+                    </div>
+                </div>
+
+                <div class="sidebar-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-chart-simple"></i> <span id="hist-title">Phân bố giá trị TVDI</span></h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="analysis-stats" id="hist-stats"></div>
+                        <div class="analysis-canvas"><canvas id="chart-hist"></canvas></div>
+                    </div>
+                </div>
+
+                <div class="sidebar-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-ranking-star"></i> <span id="top-title">Top 10 phường/xã</span></h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="analysis-canvas analysis-canvas-tall"><canvas id="chart-top10"></canvas></div>
+                        <p class="analysis-note">Nhấp vào cột để định vị phường/xã trên bản đồ.</p>
+                    </div>
+                </div>
+
+                <div class="sidebar-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-table-cells-large"></i> Ma trận tương quan (Pearson r)</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="corr-matrix" class="corr-matrix"></div>
+                        <p class="analysis-note">Tính trên các ô lưới có đủ 3 chỉ số tại thời điểm đang hiển thị.</p>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Modal Đăng nhập Hệ thống (Người dùng & Admin) -->
+    <div id="login-modal" class="modal-backdrop" style="display: none;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog login-dialog">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-right-to-bracket"></i> Đăng nhập Hệ thống</h3>
+                <button class="modal-close" id="btn-close-login-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="login-alert" class="login-alert" style="display: none;"></div>
+                <div class="form-group">
+                    <label for="login-username" style="font-weight: 600; display: block; margin-bottom: 6px;">Tên đăng nhập:</label>
+                    <input type="text" id="login-username" class="form-control" placeholder="Nhập tên đăng nhập..." style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+                <div class="form-group" style="margin-top: 14px;">
+                    <label for="login-password" style="font-weight: 600; display: block; margin-bottom: 6px;">Mật khẩu:</label>
+                    <input type="password" id="login-password" class="form-control" placeholder="••••••••" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+                
+
+
+                <div style="margin-top: 14px; text-align: center; font-size: 0.85rem; color: #64748b;">
+                    Chưa có tài khoản? <a href="#" id="link-to-register" style="color: #0284c7; font-weight: 600; text-decoration: none;">Đăng ký ngay</a>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px;">
+                <button id="btn-submit-login" class="btn btn-primary"><i class="fa-solid fa-right-to-bracket"></i> Đăng nhập</button>
+                <button id="btn-cancel-login" class="btn btn-secondary">Hủy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Đăng ký Tài khoản Người dùng Mới -->
+    <div id="register-modal" class="modal-backdrop" style="display: none;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog login-dialog">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-user-plus"></i> Đăng ký Tài khoản Người dùng</h3>
+                <button class="modal-close" id="btn-close-register-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="register-alert" class="login-alert" style="display: none;"></div>
+                <div class="form-group">
+                    <label for="reg-username" style="font-weight: 600; display: block; margin-bottom: 6px;">Tên đăng nhập: <span style="color: #ef4444;">*</span></label>
+                    <input type="text" id="reg-username" class="form-control" placeholder="Từ 3-30 ký tự (ví dụ: nguyen_van_a)" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label for="reg-fullname" style="font-weight: 600; display: block; margin-bottom: 6px;">Họ và tên hiển thị:</label>
+                    <input type="text" id="reg-fullname" class="form-control" placeholder="Họ và tên của bạn..." style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label for="reg-password" style="font-weight: 600; display: block; margin-bottom: 6px;">Mật khẩu: <span style="color: #ef4444;">*</span></label>
+                    <input type="password" id="reg-password" class="form-control" placeholder="Tối thiểu 6 ký tự" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label for="reg-confirm-password" style="font-weight: 600; display: block; margin-bottom: 6px;">Xác nhận lại mật khẩu: <span style="color: #ef4444;">*</span></label>
+                    <input type="password" id="reg-confirm-password" class="form-control" placeholder="Nhập lại mật khẩu..." style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+
+                <div style="margin-top: 14px; text-align: center; font-size: 0.85rem; color: #64748b;">
+                    Đã có tài khoản? <a href="#" id="link-to-login" style="color: #0284c7; font-weight: 600; text-decoration: none;">Đăng nhập ngay</a>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px;">
+                <button id="btn-submit-register" class="btn btn-primary" style="background: #0284c7; border-color: #0284c7;"><i class="fa-solid fa-user-plus"></i> Đăng ký & Vào hệ thống</button>
+                <button id="btn-cancel-register" class="btn btn-secondary">Hủy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Đổi Mật Khẩu Người Dùng -->
+    <div id="change-pwd-modal" class="modal-backdrop" style="display: none;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog login-dialog">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-key"></i> Đổi Mật Khẩu Tài Khoản</h3>
+                <button class="modal-close" id="btn-close-change-pwd-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="change-pwd-alert" class="login-alert" style="display: none;"></div>
+                <div class="form-group">
+                    <label for="pwd-old" style="font-weight: 600; display: block; margin-bottom: 6px;">Mật khẩu hiện tại: <span style="color: #ef4444;">*</span></label>
+                    <input type="password" id="pwd-old" class="form-control" placeholder="Nhập mật khẩu hiện tại..." style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+                <div class="form-group" style="margin-top: 14px;">
+                    <label for="pwd-new" style="font-weight: 600; display: block; margin-bottom: 6px;">Mật khẩu mới: <span style="color: #ef4444;">*</span></label>
+                    <input type="password" id="pwd-new" class="form-control" placeholder="Tối thiểu 6 ký tự..." style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+                <div class="form-group" style="margin-top: 14px;">
+                    <label for="pwd-confirm" style="font-weight: 600; display: block; margin-bottom: 6px;">Xác nhận lại mật khẩu mới: <span style="color: #ef4444;">*</span></label>
+                    <input type="password" id="pwd-confirm" class="form-control" placeholder="Nhập lại mật khẩu..." style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px;">
+                <button id="btn-submit-change-pwd" class="btn btn-primary"><i class="fa-solid fa-check"></i> Lưu mật khẩu mới</button>
+                <button id="btn-cancel-change-pwd" class="btn btn-secondary">Hủy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Cấu hình Google Earth Engine (Chỉ Admin) -->
+    <div id="gee-modal" class="modal-backdrop" style="display: none;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-satellite"></i> Google Earth Engine Tile Layer</h3>
+                <button class="modal-close" id="btn-close-gee-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="gee-modal-status" class="gee-modal-alert">Đang kiểm tra kết nối GEE...</div>
+                
+                <div class="form-group" style="margin-top: 14px;">
+                    <label for="gee-project-input" style="font-weight: 600; display: block; margin-bottom: 6px;">Google Cloud / Earth Engine Project ID:</label>
+                    <input type="text" id="gee-project-input" class="form-control" placeholder="Ví dụ: adroit-producer-509603-h6" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px;">
+                    <small style="color: #64748b; font-size: 0.78rem; display: block; margin-top: 4px;">Chức năng nạp dữ liệu và cấu hình GEE yêu cầu tài khoản Quản trị viên (Admin).</small>
+                </div>
+
+                <div class="auth-guide" style="margin-top: 16px; background: #f8fafc; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; font-size: 0.85rem;">
+                    <h4 style="margin-bottom: 6px; color: #1e293b;"><i class="fa-solid fa-terminal"></i> Hướng dẫn xác thực tài khoản GEE:</h4>
+                    <ol style="margin-left: 20px; line-height: 1.6; color: #475569;">
+                        <li>Mở cửa sổ PowerShell và chạy: <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">python -m ee.cli.eecli authenticate</code></li>
+                        <li>Trình duyệt mở ra → Chọn tài khoản Google có Earth Engine → Nhấn <strong>Allow</strong>.</li>
+                        <li>Sau khi hoàn tất, nhập Project ID và nhấn <strong>Lưu & Thử kết nối</strong>.</li>
+                    </ol>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px;">
+                <button id="btn-save-gee-project" class="btn btn-primary"><i class="fa-solid fa-link"></i> Lưu & Thử kết nối</button>
+                <button id="btn-cancel-gee" class="btn btn-secondary">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Thông số Mô hình AI Random Forest -->
+    <div id="ai-modal" class="modal-backdrop" style="display: none; padding: 20px; z-index: 9999;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog" style="max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; width: 92%; max-width: 560px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);">
+            <div class="modal-header" style="flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-bottom: 1px solid #e2e8f0; background: #f8fafc;">
+                <h3 style="margin: 0; font-size: 1rem; color: #1e293b; display: flex; align-items: center; gap: 8px;"><i class="fa-solid fa-brain" style="color: #6366f1;"></i> Mô hình AI Random Forest</h3>
+                <button class="modal-close" id="btn-close-ai-modal" style="background: #fee2e2; border: 1px solid #fca5a5; border-radius: 8px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; cursor: pointer; color: #dc2626; font-weight: bold; line-height: 1;" onclick="document.getElementById('ai-modal').style.display='none'" title="Đóng (Esc)">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 18px; overflow-y: auto; flex: 1;">
+                <div class="gee-modal-alert success">
+                    <strong><i class="fa-solid fa-circle-check"></i> Mô hình AI đã được huấn luyện thành công!</strong><br>
+                    Triển khai bằng thư viện <code>scikit-learn</code>, dự báo chuỗi thời gian khô hạn TVDI giai đoạn 2017–2027.
+                </div>
+
+                <div class="ai-modal-section" style="margin-top: 14px;">
+                    <h4 style="font-size: 0.88rem; font-weight: 700; color: #1e293b; margin-bottom: 8px;">1. Chỉ số đánh giá độ chính xác (Tập Test 2024–2025):</h4>
+                    <table class="ai-eval-table" style="width: 100%; border-collapse: collapse; font-size: 0.82rem;">
+                        <thead>
+                            <tr style="background: #f1f5f9; text-align: left;">
+                                <th style="padding: 6px 10px; border: 1px solid #e2e8f0;">Quy mô</th>
+                                <th style="padding: 6px 10px; border: 1px solid #e2e8f0;">Hệ số R²</th>
+                                <th style="padding: 6px 10px; border: 1px solid #e2e8f0;">Sai số RMSE</th>
+                                <th style="padding: 6px 10px; border: 1px solid #e2e8f0;">Sai số MAE</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;"><strong>Toàn vùng (Trung bình)</strong></td>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0; color: #16a34a; font-weight: 700;">0.289</td>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.048</td>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.038</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;"><strong>283 Ô lưới chi tiết</strong></td>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0; color: #16a34a; font-weight: 700;">0.310</td>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.159</td>
+                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.119</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="ai-modal-section" style="margin-top: 14px;">
+                    <h4 style="font-size: 0.88rem; font-weight: 700; color: #1e293b; margin-bottom: 8px;">2. Mức độ quan trọng của các đặc trưng (Feature Importance):</h4>
+                    <div id="ai-features-bar-list" style="display: flex; flex-direction: column; gap: 6px;"></div>
+                </div>
+
+                <!-- Nút huấn luyện lại AI dành riêng cho Admin -->
+                <div class="admin-ai-action-box" id="admin-ai-action-box" style="margin-top: 16px; padding: 12px; background: #f8fafc; border: 1px dashed #cbd5e0; border-radius: 6px;">
+                    <div style="font-weight: 600; font-size: 0.85rem; color: #1e293b; margin-bottom: 4px;">
+                        <i class="fa-solid fa-gear"></i> Chức năng Quản trị học máy (Admin):
+                    </div>
+                    <p style="font-size: 0.78rem; color: #64748b; margin-bottom: 8px;">
+                        Huấn luyện lại mô hình Random Forest với các chu kỳ quan trắc vệ tinh mới nhất và tự động đồng bộ dự báo vào PostGIS.
+                    </p>
+                    <button id="btn-admin-retrain-ai" class="btn btn-sm btn-primary">
+                        <i class="fa-solid fa-arrows-rotate"></i> Huấn luyện lại mô hình
+                    </button>
+                    <span id="retrain-status-text" style="font-size: 0.78rem; margin-left: 10px; color: #16a34a; display: none;"></span>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 10px 18px; border-top: 1px solid #e2e8f0; background: #f8fafc; display: flex; justify-content: flex-end; flex-shrink: 0;">
+                <button id="btn-close-ai-modal-footer" class="btn btn-secondary" style="padding: 6px 16px; font-weight: 600;" onclick="document.getElementById('ai-modal').style.display='none'"><i class="fa-solid fa-xmark"></i> Đóng</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Báo cáo thống kê Hạn hán TVDI -->
+    <div id="report-modal" class="modal-backdrop" style="display: none;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog report-dialog">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-file-invoice"></i> Báo cáo Giám sát & Dự báo Khô hạn TVDI</h3>
+                <div class="report-header-actions">
+                    <button id="btn-print-report" class="btn btn-primary" title="In trực tiếp hoặc Lưu file PDF A4">
+                        <i class="fa-solid fa-print"></i> <span>In / Lưu PDF</span>
+                    </button>
+                    <button id="btn-export-excel" class="btn btn-success" title="Tải xuống bảng dữ liệu Excel (CSV UTF-8)">
+                        <i class="fa-solid fa-file-excel"></i> <span>Xuất Excel</span>
+                    </button>
+                    <button id="btn-export-geojson" class="btn btn-geojson" title="Tải xuống lưới dữ liệu không gian GeoJSON (dùng được trong QGIS / ArcGIS)">
+                        <i class="fa-solid fa-map-location-dot"></i> <span>GeoJSON</span>
+                    </button>
+                    <button class="modal-close" id="btn-close-report-modal">&times;</button>
+                </div>
+            </div>
+            <div class="modal-body report-modal-body">
+                <div class="report-paper" id="report-paper"></div>
+            </div>
+            <div class="modal-footer report-modal-footer">
+                <span class="report-note"><i class="fa-solid fa-circle-info"></i> Mẹo: Chọn "Save as PDF" trong hộp thoại In để lưu báo cáo dưới dạng tệp tin PDF chuẩn A4.</span>
+                <button id="btn-close-report-footer" class="btn btn-secondary">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Quản lý Người dùng & Nhật ký Hoạt động (Dành riêng cho Admin) -->
+    <div id="admin-users-modal" class="modal-backdrop" style="display: none; z-index: 10001;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog admin-users-dialog">
+            <div class="modal-header">
+                <div class="admin-modal-title-box">
+                    <div class="admin-modal-title">
+                        <i class="fa-solid fa-users-gear" style="color: #0284c7;"></i>
+                        <span>Quản lý Người dùng & Nhật ký Hoạt động</span>
+                    </div>
+                    <div class="admin-modal-sub">Giám sát tài khoản đăng ký, xem nhật ký hành vi (Audit log), khóa tài khoản và hỗ trợ đổi mật khẩu.</div>
+                </div>
+                <button class="modal-close" id="btn-close-admin-users">&times;</button>
+            </div>
+
+            <!-- Tab Navigation bên trong Modal Admin -->
+            <div class="admin-modal-tabs">
+                <button class="admin-modal-tab-btn active" id="tab-admin-users">
+                    <i class="fa-solid fa-users"></i>
+                    <span>Danh sách Người dùng</span>
+                    <span class="admin-tab-badge" id="badge-total-users">0</span>
+                </button>
+                <button class="admin-modal-tab-btn" id="tab-admin-activities">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>Nhật ký Hoạt động (Audit Log)</span>
+                    <span class="admin-tab-badge" id="badge-total-activities">0</span>
+                </button>
+            </div>
+
+            <div class="modal-body admin-users-body">
+                <!-- TAB 1: Danh sách Người dùng -->
+                <div id="view-admin-users" class="admin-tab-view active">
+                    <div class="admin-view-toolbar">
+                        <div class="admin-search-wrapper">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="input-search-users" placeholder="Tìm theo tên tài khoản hoặc họ tên..." autocomplete="off">
+                        </div>
+                        <select id="select-filter-user-status" class="admin-filter-select">
+                            <option value="all">Tất cả trạng thái</option>
+                            <option value="active">Đang hoạt động</option>
+                            <option value="blocked">Đã bị khóa</option>
+                        </select>
+                        <button id="btn-refresh-users" class="btn btn-secondary btn-sm" title="Tải lại danh sách">
+                            <i class="fa-solid fa-rotate"></i>
+                            <span>Làm mới</span>
+                        </button>
+                    </div>
+
+                    <div class="admin-table-container">
+                        <table class="admin-table" id="table-admin-users">
+                            <thead>
+                                <tr>
+                                    <th style="width: 45px;">STT</th>
+                                    <th>Tài khoản & Họ tên</th>
+                                    <th style="width: 100px;">Vai trò</th>
+                                    <th style="width: 130px;">Ngày đăng ký</th>
+                                    <th style="width: 130px;">Đăng nhập gần nhất</th>
+                                    <th style="width: 110px;">Trạng thái</th>
+                                    <th style="width: 220px; text-align: center;">Thao tác quản trị</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-admin-users">
+                                <tr><td colspan="7" style="text-align: center; padding: 25px; color: #64748b;">Đang tải danh sách người dùng...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- TAB 2: Nhật ký Hoạt động (Audit Log) -->
+                <div id="view-admin-activities" class="admin-tab-view" style="display: none;">
+                    <div class="admin-view-toolbar">
+                        <div class="admin-filter-group">
+                            <label><i class="fa-solid fa-user"></i> Người dùng:</label>
+                            <select id="select-filter-act-user" class="admin-filter-select">
+                                <option value="all">-- Toàn bộ hệ thống --</option>
+                            </select>
+                        </div>
+                        <div class="admin-search-wrapper" style="flex: 1;">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="input-search-activities" placeholder="Lọc theo hành vi, chi tiết thao tác..." autocomplete="off">
+                        </div>
+                        <button id="btn-refresh-activities" class="btn btn-secondary btn-sm" title="Tải lại nhật ký">
+                            <i class="fa-solid fa-rotate"></i>
+                            <span>Làm mới</span>
+                        </button>
+                    </div>
+
+                    <div class="admin-table-container">
+                        <table class="admin-table" id="table-admin-activities">
+                            <thead>
+                                <tr>
+                                    <th style="width: 140px;">Thời gian</th>
+                                    <th style="width: 120px;">Tài khoản</th>
+                                    <th style="width: 160px;">Hành vi</th>
+                                    <th>Chi tiết hoạt động</th>
+                                    <th style="width: 100px; text-align: center;">IP</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-admin-activities">
+                                <tr><td colspan="5" style="text-align: center; padding: 25px; color: #64748b;">Đang tải nhật ký hoạt động...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="font-size: 0.78rem; color: #64748b;">
+                    <i class="fa-solid fa-shield-halved" style="color: #16a34a;"></i>
+                    Quyền Quản trị viên: Toàn quyền quản lý tài khoản và giám sát an ninh hệ thống.
+                </div>
+                <button id="btn-close-admin-users-footer" class="btn btn-secondary">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sub-Modal: Admin Đổi Mật Khẩu Cho Người Dùng -->
+    <div id="admin-reset-pwd-modal" class="modal-backdrop" style="display: none; z-index: 10002;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog login-dialog">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-key" style="color: #0284c7;"></i> Đổi mật khẩu cho người dùng</h3>
+                <button class="modal-close" id="btn-close-admin-reset-pwd">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <p style="font-size: 0.82rem; color: #475569; margin: 0 0 12px 0;">
+                    Đặt lại mật khẩu mới cho tài khoản: <strong id="admin-reset-target-uname" style="color: #0284c7;"></strong> (<span id="admin-reset-target-fullname"></span>)
+                </p>
+                <div id="admin-reset-alert" class="login-alert" style="display: none;"></div>
+                <div class="login-field">
+                    <label for="admin-reset-new-pwd"><i class="fa-solid fa-lock"></i> Mật khẩu mới</label>
+                    <input type="password" id="admin-reset-new-pwd" placeholder="Nhập mật khẩu mới (ít nhất 6 ký tự)">
+                </div>
+                <div class="login-field">
+                    <label for="admin-reset-confirm-pwd"><i class="fa-solid fa-shield-halved"></i> Xác nhận mật khẩu mới</label>
+                    <input type="password" id="admin-reset-confirm-pwd" placeholder="Nhập lại mật khẩu mới">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-cancel-admin-reset-pwd" class="btn btn-secondary">Hủy</button>
+                <button id="btn-submit-admin-reset-pwd" class="btn btn-primary"><i class="fa-solid fa-check"></i> Cập nhật mật khẩu</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Popup -->
+    <div id="app-toast" class="app-toast" style="display: none;"></div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- MapLibre GL JS cho Bản đồ 3D -->
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- App JS (v12.0) -->
+    <script src="/static/js/app.js?v=12.0"></script>
+    <script src="/static/js/map-decor.js?v=12.0"></script>
+    <script src="/static/js/map3d.js?v=12.0"></script>
+    <script src="/static/js/analysis.js?v=12.0"></script>
+    <script src="/static/js/pixel-raster.js?v=12.0"></script>
+</body>
+</html>

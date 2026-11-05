@@ -1,0 +1,132 @@
+{
+  "model_name": "Random Forest Regressor",
+  "library": "scikit-learn",
+  "trained_at": "2026-11-01 06:51:41",
+  "train_period": "2017-01-01 đến 2023-12-12 (168 kỳ quan trắc, 7 năm)",
+  "test_period": "2024-01-01 đến 2025-12-12 (48 kỳ quan trắc, 2 năm)",
+  "future_forecast_period": "2026-10-17 đến 2027-03-31 (Dự báo thời gian thực & mùa khô 2027)",
+  "hyperparameters": {
+    "n_estimators": 120,
+    "max_depth": 12,
+    "min_samples_split": 4,
+    "random_state": 42
+  },
+  "grid_metrics": {
+    "r2_score": 0.3695,
+    "rmse": 0.1515,
+    "mae": 0.1136,
+    "test_samples": 13119
+  },
+  "overall_metrics": {
+    "r2_score": 0.2893,
+    "rmse": 0.0478,
+    "mae": 0.0376,
+    "test_samples": 48
+  },
+  "feature_importances": [
+    {
+      "feature": "lag1",
+      "importance_percent": 38.92
+    },
+    {
+      "feature": "cell_seasonal_mean",
+      "importance_percent": 26.73
+    },
+    {
+      "feature": "diff_lag",
+      "importance_percent": 5.84
+    },
+    {
+      "feature": "lag24",
+      "importance_percent": 4.56
+    },
+    {
+      "feature": "lag3",
+      "importance_percent": 3.84
+    },
+    {
+      "feature": "cos_period",
+      "importance_percent": 2.91
+    },
+    {
+      "feature": "rolling_mean3",
+      "importance_percent": 2.77
+    },
+    {
+      "feature": "lon",
+      "importance_percent": 2.68
+    },
+    {
+      "feature": "sin_period",
+      "importance_percent": 2.57
+    },
+    {
+      "feature": "lag2",
+      "importance_percent": 2.56
+    },
+    {
+      "feature": "cell_mean",
+      "importance_percent": 2.51
+    },
+    {
+      "feature": "lat",
+      "importance_percent": 2.28
+    },
+    {
+      "feature": "month",
+      "importance_percent": 1.82
+    }
+  ],
+  "future_dates": [
+    "2026-01-01",
+    "2026-01-16",
+    "2026-01-31",
+    "2026-02-15",
+    "2026-03-02",
+    "2026-03-17",
+    "2026-04-01",
+    "2026-04-16",
+    "2026-05-01",
+    "2026-05-16",
+    "2026-05-31",
+    "2026-06-15",
+    "2026-06-30",
+    "2026-07-15",
+    "2026-07-30",
+    "2026-08-14",
+    "2026-08-29",
+    "2026-09-13",
+    "2026-09-28",
+    "2026-10-13",
+    "2026-10-26",
+    "2026-11-10",
+    "2026-11-25",
+    "2026-12-10",
+    "2026-12-25",
+    "2027-01-09",
+    "2027-01-24",
+    "2027-02-08",
+    "2027-02-23",
+    "2027-03-10",
+    "2027-03-25",
+    "2027-04-09",
+    "2027-04-24",
+    "2027-05-09",
+    "2027-05-24",
+    "2027-06-08",
+    "2027-06-23",
+    "2027-07-08",
+    "2027-07-23",
+    "2027-08-07",
+    "2027-08-22",
+    "2027-09-06",
+    "2027-09-21",
+    "2027-10-06",
+    "2027-10-21",
+    "2027-11-05",
+    "2027-11-20",
+    "2027-12-05",
+    "2027-12-20",
+    "2027-12-31"
+  ]
+}
