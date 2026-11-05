@@ -31,8 +31,8 @@ if not os.path.exists(PSQL_PATH):
     input("\nNhấn Enter để thoát...")
     sys.exit(1)
 
-print("Ví dụ đường link hợp lệ:")
-print("postgresql://postgres:matkhau@db.axymtpdoiqkxogouivss.supabase.co:5432/postgres")
+print("Đường link kết nối chuẩn (dùng IPv4 tương thích mạng Việt Nam):")
+print("postgresql://postgres.axymtpdoiqkxogouivss:matkhau@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres")
 print()
 
 url = input("Dán đường link Supabase của bạn vào đây rồi bấm Enter:\n> ").strip()
