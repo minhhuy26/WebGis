@@ -984,7 +984,7 @@ def retrain_model(background_tasks: BackgroundTasks, admin_user=Depends(require_
             from ...scripts.train_rf import train_and_evaluate
             from ...scripts.train_monthly_forecast import train_and_populate_monthly_12m
             train_and_evaluate()
-            train_and_populate_monthly_12m()
+            train_and_populate_monthly_12m(force_retrain=True)
         except Exception as e:
             print(f"[ERROR] Huấn luyện lại thất bại: {e}")
 

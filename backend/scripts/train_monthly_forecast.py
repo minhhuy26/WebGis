@@ -314,6 +314,16 @@ def _sync_ward_forecasts(conn, target_dates: List[date], horizon_type: str, is_s
     if not ward_records:
         return 0
 
+    conn.execute(
+        text("""
+            DELETE FROM tvdi.ward_forecasts
+            WHERE target_date = ANY(:dates)
+              AND horizon_type = :h
+              AND satellite_source = 'LANDSAT'
+        """),
+        {"dates": target_dates, "h": horizon_type},
+    )
+
     with conn.connection.cursor() as cur:
         execute_values(
             cur,
@@ -324,15 +334,6 @@ def _sync_ward_forecasts(conn, target_dates: List[date], horizon_type: str, is_s
                 drought_level, model_run_id
             )
             VALUES %s
-            ON CONFLICT ON CONSTRAINT uq_ward_forecast DO UPDATE SET
-                issued_date = EXCLUDED.issued_date,
-                forecast_step = EXCLUDED.forecast_step,
-                is_simulated = EXCLUDED.is_simulated,
-                lst_pred = EXCLUDED.lst_pred,
-                ndvi_pred = EXCLUDED.ndvi_pred,
-                tvdi_pred = EXCLUDED.tvdi_pred,
-                drought_level = EXCLUDED.drought_level,
-                model_run_id = EXCLUDED.model_run_id
             """,
             ward_records,
             page_size=5000,
@@ -492,16 +493,6 @@ def generate_daily_7d_simulated(start_date: Optional[date] = None) -> List[str]:
                     is_simulated, model_name, model_run_id, drought_level
                 )
                 VALUES %s
-                ON CONFLICT (date, COALESCE(cell_id, -1), horizon_type, satellite_source) DO UPDATE SET
-                    tvdi_pred = EXCLUDED.tvdi_pred,
-                    lst_pred = EXCLUDED.lst_pred,
-                    ndvi_pred = EXCLUDED.ndvi_pred,
-                    forecast_step = EXCLUDED.forecast_step,
-                    issued_date = EXCLUDED.issued_date,
-                    is_simulated = EXCLUDED.is_simulated,
-                    model_name = EXCLUDED.model_name,
-                    model_run_id = EXCLUDED.model_run_id,
-                    drought_level = EXCLUDED.drought_level
                 """,
                 records,
                 page_size=5000,
@@ -512,15 +503,112 @@ def generate_daily_7d_simulated(start_date: Optional[date] = None) -> List[str]:
     return [d.strftime("%Y-%m-%d") for d in days]
 
 
-def train_and_populate_monthly_12m(start_month: Optional[date] = None) -> Dict:
-    """Huấn luyện Random Forest theo tháng (TVDI, LST, NDVI) và ghi dự báo 12 tháng tới vào PostGIS."""
-    print("=" * 72)
-    print("HUẤN LUYỆN RANDOM FOREST THEO THÁNG (TVDI, LST, NDVI) & DỰ BÁO 12 THÁNG")
-    print("=" * 72)
+def seed_monthly_12m_fast(start_month: date) -> Optional[Dict]:
+    """Nạp nhanh dữ liệu dự báo 12 tháng đã huấn luyện từ monthly_12m_seed.json (tránh timeout trên cloud CPU thấp)."""
+    seed_file = MODELS_DIR / "monthly_12m_seed.json"
+    if not seed_file.exists():
+        return None
+    try:
+        payload = json.loads(seed_file.read_text(encoding="utf-8"))
+        months_str = payload.get("months") or []
+        seed_rows = payload.get("rows") or []
+        if len(months_str) < 12 or not seed_rows:
+            return None
 
+        start_str = start_month.strftime("%Y-%m-%d")
+        # Chỉ dùng seed nếu cửa sổ hiện tại nằm trong dải seed (tránh dữ liệu quá cũ)
+        if start_str < months_str[0] or start_str > months_str[-1]:
+            return None
+
+        future_months = [datetime.strptime(m, "%Y-%m-%d").date() for m in months_str]
+        issued_dt = date.today()
+        metrics_file = MODELS_DIR / "rf_metrics.json"
+        mdata = json.loads(metrics_file.read_text(encoding="utf-8")) if metrics_file.exists() else {}
+        mm = mdata.get("monthly_metrics", {})
+        tvdi_m = mm.get("tvdi_grid", {})
+
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE tvdi.model_runs
+                SET is_active = FALSE
+                WHERE horizon_type = 'monthly_12m' AND satellite_source = 'LANDSAT'
+            """))
+            run_id = conn.execute(
+                text("""
+                    INSERT INTO tvdi.model_runs (
+                        model_name, model_version, target_index, satellite_source,
+                        horizon_type, is_simulated, train_period, test_period,
+                        r2_score, rmse, mae, metrics_json, notes, is_active
+                    )
+                    VALUES (
+                        'Random Forest Regressor (Monthly)', 'v2.0', 'MULTI', 'LANDSAT',
+                        'monthly_12m', FALSE, '2017-01 đến 2023-12 (84 tháng)', '2024-01 đến 2025-12 (24 tháng)',
+                        :r2, :rmse, :mae, CAST(:mjson AS jsonb),
+                        'Dự báo AI theo tháng (12 tháng) cho 3 chỉ số TVDI, LST, NDVI từ Landsat 8/9', TRUE
+                    )
+                    RETURNING id
+                """),
+                {
+                    "r2": tvdi_m.get("r2_score"),
+                    "rmse": tvdi_m.get("rmse"),
+                    "mae": tvdi_m.get("mae"),
+                    "mjson": json.dumps(mm, ensure_ascii=False),
+                },
+            ).scalar()
+
+            conn.execute(text("""
+                DELETE FROM tvdi.tvdi_forecast
+                WHERE horizon_type = 'monthly_12m' AND satellite_source = 'LANDSAT'
+            """))
+
+            records = []
+            for d_str, cid, tv, ls, nd, step_idx, dlvl in seed_rows:
+                d_obj = datetime.strptime(d_str, "%Y-%m-%d").date()
+                records.append((
+                    d_obj, cid, tv, ls, nd,
+                    "monthly_12m", step_idx, issued_dt, "LANDSAT",
+                    False, "Random Forest (Monthly AI)", run_id, dlvl,
+                ))
+
+            with conn.connection.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO tvdi.tvdi_forecast (
+                        date, cell_id, tvdi_pred, lst_pred, ndvi_pred,
+                        horizon_type, forecast_step, issued_date, satellite_source,
+                        is_simulated, model_name, model_run_id, drought_level
+                    )
+                    VALUES %s
+                    """,
+                    records,
+                    page_size=5000,
+                )
+
+            _sync_ward_forecasts(conn, future_months, "monthly_12m", False, run_id)
+
+        daily_dates = generate_daily_7d_simulated(date.today())
+        print(f"  [FAST-SEED] Đã nạp nhanh {len(records)} dòng monthly_12m + {len(daily_dates)} ngày daily_7d.")
+        return {"monthly_dates": months_str, "daily_dates": daily_dates}
+    except Exception as e:
+        print(f"  [WARN] Fast seed monthly_12m lỗi, chuyển sang huấn luyện đầy đủ: {e}")
+        return None
+
+
+def train_and_populate_monthly_12m(start_month: Optional[date] = None, force_retrain: bool = False) -> Dict:
+    """Huấn luyện Random Forest theo tháng (TVDI, LST, NDVI) và ghi dự báo 12 tháng tới vào PostGIS."""
     if start_month is None:
         today = date.today()
         start_month = date(today.year, today.month, 1)
+
+    if not force_retrain:
+        fast_res = seed_monthly_12m_fast(start_month)
+        if fast_res is not None:
+            return fast_res
+
+    print("=" * 72)
+    print("HUẤN LUYỆN RANDOM FOREST THEO THÁNG (TVDI, LST, NDVI) & DỰ BÁO 12 THÁNG")
+    print("=" * 72)
 
     future_months = [_add_months(start_month, i) for i in range(12)]
     print(f"Cửa sổ 12 tháng dự báo AI: {future_months[0]} -> {future_months[-1]}")
@@ -654,16 +742,6 @@ def train_and_populate_monthly_12m(start_month: Optional[date] = None) -> Dict:
                     is_simulated, model_name, model_run_id, drought_level
                 )
                 VALUES %s
-                ON CONFLICT (date, COALESCE(cell_id, -1), horizon_type, satellite_source) DO UPDATE SET
-                    tvdi_pred = EXCLUDED.tvdi_pred,
-                    lst_pred = EXCLUDED.lst_pred,
-                    ndvi_pred = EXCLUDED.ndvi_pred,
-                    forecast_step = EXCLUDED.forecast_step,
-                    issued_date = EXCLUDED.issued_date,
-                    is_simulated = EXCLUDED.is_simulated,
-                    model_name = EXCLUDED.model_name,
-                    model_run_id = EXCLUDED.model_run_id,
-                    drought_level = EXCLUDED.drought_level
                 """,
                 records,
                 page_size=5000,

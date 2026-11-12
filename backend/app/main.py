@@ -83,13 +83,19 @@ def _ensure_standard_schema_fast() -> bool:
                 SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'tvdi' AND table_name = 'ward_forecasts'
             """)).fetchone() is not None
-            if has_col and has_bul and has_wf:
+            has_idx = conn.execute(text("""
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = 'tvdi' AND indexname = 'uq_tvdi_forecast_target'
+            """)).fetchone() is not None
+            if has_col and has_bul and has_wf and has_idx:
                 return False
 
         from ..scripts import migrate_schema_standard as mig
-        mig.step_create_new_tables()
-        mig.step_alter_existing_tables()
-        mig.step_constraints_and_indexes()
+        if not (has_col and has_bul and has_wf):
+            mig.step_create_new_tables()
+            mig.step_alter_existing_tables()
+        if not has_idx:
+            mig.step_constraints_and_indexes()
         print("[STARTUP] Đã tự động nâng cấp cấu trúc bảng/cột chuẩn trong schema tvdi.")
         return True
     except Exception as e:
@@ -130,12 +136,22 @@ def _ensure_cloud_data_background():
                 {"m0": m0},
             ).scalar() or 0
 
-        if d7_cnt < 7:
+        if m12_cnt < 12:
+            train_and_populate_monthly_12m(m0, force_retrain=False)
+            print("[STARTUP-BG] Đã nạp xong dữ liệu dự báo 12 tháng (monthly_12m).")
+        elif d7_cnt < 7:
             generate_daily_7d_simulated(today_dt)
             print("[STARTUP-BG] Đã sinh xong dữ liệu dự báo 7 ngày (daily_7d).")
-        if m12_cnt < 12:
-            train_and_populate_monthly_12m(m0)
-            print("[STARTUP-BG] Đã huấn luyện & nạp xong dữ liệu dự báo 12 tháng (monthly_12m).")
+
+        try:
+            from .routers.bulletins import _ensure_default_bulletins
+            db_b = SessionLocal()
+            try:
+                _ensure_default_bulletins(db_b)
+            finally:
+                db_b.close()
+        except Exception as be:
+            print(f"[STARTUP-BG] Lưu ý bản tin mặc định: {be}")
     except Exception as e:
         print(f"[STARTUP-BG] Bỏ qua đồng bộ dữ liệu nền: {e}")
 

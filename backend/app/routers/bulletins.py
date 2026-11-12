@@ -334,6 +334,43 @@ def build_bulletin_draft(
 def _ensure_default_bulletins(db: Session) -> None:
     cnt = db.execute(text("SELECT COUNT(*) FROM tvdi.bulletins")).scalar() or 0
     if cnt > 0:
+        # Nếu bản tin hệ thống tạo trước khi đồng bộ xong bị thiếu avg_tvdi -> tự làm mới lại
+        stale = db.execute(
+            text("""
+                SELECT id, bulletin_type FROM tvdi.bulletins
+                WHERE created_by = 'system'
+                  AND (summary_stats->>'avg_tvdi' IS NULL OR summary_stats->>'avg_tvdi' = 'null')
+            """)
+        ).fetchall()
+        if stale:
+            try:
+                for bid, btype in stale:
+                    fresh = build_bulletin_draft(db, horizon=btype or "observed")
+                    if fresh["summary_stats"].get("avg_tvdi") is not None:
+                        db.execute(
+                            text("""
+                                UPDATE tvdi.bulletins
+                                SET title = :title,
+                                    period_start = :ps,
+                                    period_end = :pe,
+                                    summary_stats = CAST(:stats AS jsonb),
+                                    highlights = :hi,
+                                    recommendations = :rec
+                                WHERE id = :bid
+                            """),
+                            {
+                                "bid": bid,
+                                "title": fresh["title"],
+                                "ps": _parse_date(fresh["period_start"], date.today()),
+                                "pe": _parse_date(fresh["period_end"], date.today()),
+                                "stats": json.dumps(fresh["summary_stats"], ensure_ascii=False),
+                                "hi": fresh["highlights"],
+                                "rec": fresh["recommendations"],
+                            },
+                        )
+                db.commit()
+            except Exception:
+                db.rollback()
         return
     try:
         draft_obs = build_bulletin_draft(db, horizon="observed")

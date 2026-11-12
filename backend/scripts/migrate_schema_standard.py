@@ -192,46 +192,72 @@ def step_seed_reference_and_spatial():
     init_wards_table(json_only=False)
 
 
+def _run_ddl_safe(sql: str, label: str = ""):
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(sql))
+    except Exception as e:
+        print(f"  [WARN] DDL {label or sql[:60]}: {e}")
+
+
 def step_constraints_and_indexes():
     print("[4/7] Thiết lập Foreign Keys và Unique Indexes chuẩn...")
+    # Dọn bản ghi trùng (nếu có từ CSDL cũ) trước khi tạo unique index
+    _run_ddl_safe("""
+        DELETE FROM tvdi.tvdi_forecast a
+        USING tvdi.tvdi_forecast b
+        WHERE a.id < b.id
+          AND a.date = b.date
+          AND COALESCE(a.cell_id, -1) = COALESCE(b.cell_id, -1)
+          AND a.horizon_type = b.horizon_type
+          AND a.satellite_source = b.satellite_source;
+    """, "dedup tvdi_forecast")
+    _run_ddl_safe("""
+        DELETE FROM tvdi.tvdi_grid a
+        USING tvdi.tvdi_grid b
+        WHERE a.id < b.id
+          AND a.date = b.date
+          AND a.cell_id = b.cell_id
+          AND a.satellite_source = b.satellite_source
+          AND a.granularity = b.granularity;
+    """, "dedup tvdi_grid")
+
     with engine.begin() as conn:
-        # Chuyển unique của tvdi_series sang (date, satellite_source, granularity) để hỗ trợ đa nguồn Landsat + MODIS
         if _constraint_exists(conn, "tvdi_series_date_key"):
             conn.execute(text("ALTER TABLE tvdi.tvdi_series DROP CONSTRAINT tvdi_series_date_key;"))
         if not _constraint_exists(conn, "uq_tvdi_series_obs"):
-            conn.execute(
-                text("""
-                    ALTER TABLE tvdi.tvdi_series
-                    ADD CONSTRAINT uq_tvdi_series_obs UNIQUE (date, satellite_source, granularity);
-                """)
+            _run_ddl_safe(
+                "ALTER TABLE tvdi.tvdi_series ADD CONSTRAINT uq_tvdi_series_obs UNIQUE (date, satellite_source, granularity);",
+                "uq_tvdi_series_obs",
             )
-
         if not _constraint_exists(conn, "uq_tvdi_grid_obs"):
-            conn.execute(
-                text("""
-                    ALTER TABLE tvdi.tvdi_grid
-                    ADD CONSTRAINT uq_tvdi_grid_obs UNIQUE (date, cell_id, satellite_source, granularity);
-                """)
+            _run_ddl_safe(
+                "ALTER TABLE tvdi.tvdi_grid ADD CONSTRAINT uq_tvdi_grid_obs UNIQUE (date, cell_id, satellite_source, granularity);",
+                "uq_tvdi_grid_obs",
             )
 
-        conn.execute(
-            text("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_tvdi_forecast_target
-                ON tvdi.tvdi_forecast (date, COALESCE(cell_id, -1), horizon_type, satellite_source);
-            """)
-        )
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_grid_cells_point ON tvdi.grid_cells USING GIST (geom_point);"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tvdi_grid_source_gran ON tvdi.tvdi_grid (satellite_source, granularity);"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tvdi_series_source_gran ON tvdi.tvdi_series (satellite_source, granularity);"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tvdi_forecast_horizon_src ON tvdi.tvdi_forecast (horizon_type, satellite_source);"))
+    _run_ddl_safe("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_tvdi_forecast_target
+        ON tvdi.tvdi_forecast (date, COALESCE(cell_id, -1), horizon_type, satellite_source);
+    """, "uq_tvdi_forecast_target")
+    _run_ddl_safe("CREATE INDEX IF NOT EXISTS idx_grid_cells_point ON tvdi.grid_cells USING GIST (geom_point);", "idx_grid_cells_point")
+    _run_ddl_safe("CREATE INDEX IF NOT EXISTS idx_tvdi_grid_source_gran ON tvdi.tvdi_grid (satellite_source, granularity);", "idx_tvdi_grid_source_gran")
+    _run_ddl_safe("CREATE INDEX IF NOT EXISTS idx_tvdi_series_source_gran ON tvdi.tvdi_series (satellite_source, granularity);", "idx_tvdi_series_source_gran")
+    _run_ddl_safe("CREATE INDEX IF NOT EXISTS idx_tvdi_forecast_horizon_src ON tvdi.tvdi_forecast (horizon_type, satellite_source);", "idx_tvdi_forecast_horizon_src")
 
-        # Foreign keys
-        _add_fk_if_missing(conn, "grid_cells", "fk_grid_cells_region", "FOREIGN KEY (region_id) REFERENCES tvdi.regions(id) ON DELETE SET NULL")
-        _add_fk_if_missing(conn, "wards", "fk_wards_region", "FOREIGN KEY (region_id) REFERENCES tvdi.regions(id) ON DELETE SET NULL")
-        _add_fk_if_missing(conn, "tvdi_grid", "fk_tvdi_grid_cell", "FOREIGN KEY (cell_id) REFERENCES tvdi.grid_cells(cell_id) ON DELETE CASCADE")
-        _add_fk_if_missing(conn, "tvdi_forecast", "fk_tvdi_forecast_cell", "FOREIGN KEY (cell_id) REFERENCES tvdi.grid_cells(cell_id) ON DELETE CASCADE")
-        _add_fk_if_missing(conn, "tvdi_forecast", "fk_tvdi_forecast_model_run", "FOREIGN KEY (model_run_id) REFERENCES tvdi.model_runs(id) ON DELETE SET NULL")
-        _add_fk_if_missing(conn, "tvdi_forecast", "fk_tvdi_forecast_drought_lvl", "FOREIGN KEY (drought_level) REFERENCES tvdi.drought_classes(level) ON DELETE SET NULL")
+    for tbl, cname, fk_sql in (
+        ("grid_cells", "fk_grid_cells_region", "FOREIGN KEY (region_id) REFERENCES tvdi.regions(id) ON DELETE SET NULL"),
+        ("wards", "fk_wards_region", "FOREIGN KEY (region_id) REFERENCES tvdi.regions(id) ON DELETE SET NULL"),
+        ("tvdi_grid", "fk_tvdi_grid_cell", "FOREIGN KEY (cell_id) REFERENCES tvdi.grid_cells(cell_id) ON DELETE CASCADE"),
+        ("tvdi_forecast", "fk_tvdi_forecast_cell", "FOREIGN KEY (cell_id) REFERENCES tvdi.grid_cells(cell_id) ON DELETE CASCADE"),
+        ("tvdi_forecast", "fk_tvdi_forecast_model_run", "FOREIGN KEY (model_run_id) REFERENCES tvdi.model_runs(id) ON DELETE SET NULL"),
+        ("tvdi_forecast", "fk_tvdi_forecast_drought_lvl", "FOREIGN KEY (drought_level) REFERENCES tvdi.drought_classes(level) ON DELETE SET NULL"),
+    ):
+        try:
+            with engine.begin() as conn:
+                _add_fk_if_missing(conn, tbl, cname, fk_sql)
+        except Exception as e:
+            print(f"  [WARN] FK {tbl}.{cname}: {e}")
 
 
 def step_backfill_series_stats():

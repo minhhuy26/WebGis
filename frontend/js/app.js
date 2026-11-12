@@ -3179,12 +3179,22 @@ function setTimelineIndex(index) {
 }
 
 // --- 15. Khởi tạo mốc thời gian và điều khiển Timeline (Quan trắc + Dự báo 7 ngày / 12 tháng) ---
+async function fetchWithTimeout(url, ms = 12000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+        return await fetch(url, { signal: ctrl.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function initTimeline() {
     try {
         const [datesRes, dailyRes, monthlyRes] = await Promise.all([
             fetch('/api/dates'),
-            fetch('/api/prediction/dates?horizon=daily_7d').catch(() => ({ ok: false, json: async () => [] })),
-            fetch('/api/prediction/dates?horizon=monthly_12m').catch(() => ({ ok: false, json: async () => [] })),
+            fetchWithTimeout('/api/prediction/dates?horizon=daily_7d', 12000).catch(() => ({ ok: false, json: async () => [] })),
+            fetchWithTimeout('/api/prediction/dates?horizon=monthly_12m', 12000).catch(() => ({ ok: false, json: async () => [] })),
         ]);
 
         const dates = await datesRes.json();
