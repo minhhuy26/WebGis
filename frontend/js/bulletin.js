@@ -31,7 +31,39 @@ function _escapeHtml(str) {
         .replace(/"/g, '&quot;');
 }
 
+function _isBulletinAdmin() {
+    return (typeof isAdminUser === 'function') ? isAdminUser() : false;
+}
+
+function _cleanBulletinTextForRole(str) {
+    const raw = String(str || '');
+    if (_isBulletinAdmin() || !raw) return raw;
+    return raw
+        .replace(/\s*\(AI Random Forest\)/gi, '')
+        .replace(/\s*\(Giả lập(?:\s*[·\-]\s*Landsat(?:\s*8\/9)?)?\)/gi, '')
+        .replace(/\(Kỳ\s+Landsat\s+/gi, '(Kỳ ')
+        .replace(/Dự báo\s+AI\s+Random Forest/gi, 'Dự báo')
+        .replace(/Quan trắc\s+vệ tinh\s+Landsat(?:\s*8\/9)?/gi, 'Quan trắc')
+        .replace(/\s*Số liệu dự báo 7 ngày được mô phỏng giả lập[^.]*\./gi, '')
+        .replace(/\s*Số liệu dự báo 12 tháng được tính toán từ mô hình AI Random Forest[^.]*\./gi, '')
+        .replace(/\s*Số liệu quan trắc thực tế từ ảnh viễn thám Landsat[^.]*\./gi, '')
+        .replace(/\s*theo chu kỳ vệ tinh(?=\s)/gi, '')
+        .replace(/\s*(?:Landsat\s*8\/9|Landsat|Google Earth Engine|Random Forest)/gi, '')
+        .replace(/\bAI\b/g, '')
+        .replace(/\(\s*\)/g, '')
+        .replace(/\s+([,.;:)])/g, '$1')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
 function _formatHorizonBadge(bType) {
+    const isAdmin = _isBulletinAdmin();
+    if (!isAdmin) {
+        if (bType === 'daily_7d') return '<span class="bul-badge is-sim"><i class="fa-solid fa-calendar-day"></i> Dự báo 7 ngày</span>';
+        if (bType === 'monthly_12m') return '<span class="bul-badge is-ai"><i class="fa-solid fa-calendar-days"></i> Dự báo 12 tháng</span>';
+        if (bType === 'aggregate') return '<span class="bul-badge is-obs"><i class="fa-solid fa-calendar-week"></i> Tổng hợp quan trắc</span>';
+        return '<span class="bul-badge is-obs"><i class="fa-solid fa-eye"></i> Quan trắc thực tế</span>';
+    }
     if (bType === 'daily_7d') return '<span class="bul-badge is-sim"><i class="fa-solid fa-flask"></i> Dự báo 7 ngày (Giả lập · Landsat)</span>';
     if (bType === 'monthly_12m') return '<span class="bul-badge is-ai"><i class="fa-solid fa-brain"></i> Dự báo 12 tháng (AI Random Forest)</span>';
     if (bType === 'aggregate') return '<span class="bul-badge is-obs"><i class="fa-solid fa-calendar-week"></i> Tổng hợp quan trắc Landsat</span>';
@@ -341,7 +373,9 @@ function renderBulletinChartsDataUrls(seriesPoints = [], levelCounts = {}, activ
                     legend: { display: false },
                     title: {
                         display: true,
-                        text: `Diễn biến ${meta.label} (${bType === 'daily_7d' ? '7 ngày · Giả lập' : (bType === 'monthly_12m' ? '12 tháng · AI' : 'Các kỳ quan trắc')})`,
+                        text: _isBulletinAdmin()
+                            ? `Diễn biến ${meta.label} (${bType === 'daily_7d' ? '7 ngày · Giả lập' : (bType === 'monthly_12m' ? '12 tháng · AI' : 'Các kỳ quan trắc')})`
+                            : `Diễn biến ${meta.label} (${bType === 'daily_7d' ? '7 ngày' : (bType === 'monthly_12m' ? '12 tháng' : 'Các kỳ quan trắc')})`,
                         color: '#0f172a',
                         font: { size: 13, weight: 'bold' },
                     },
@@ -426,7 +460,14 @@ function renderBulletinPaperFromDraft(draft) {
     const seriesPoints = Array.isArray(stats.series_points) ? stats.series_points : [];
 
     // Tạo ảnh bản đồ + 2 biểu đồ PNG
-    const mapSubtitle = `${draft.period_start === draft.period_end ? draft.period_start : `${draft.period_start} → ${draft.period_end}`} · ${bType === 'daily_7d' ? 'Giả lập (Landsat)' : (bType === 'monthly_12m' ? 'AI Random Forest' : 'Quan trắc Landsat 8/9')}`;
+    const isAdmin = _isBulletinAdmin();
+    const mapTypeTag = isAdmin
+        ? (bType === 'daily_7d' ? 'Giả lập (Landsat)' : (bType === 'monthly_12m' ? 'AI Random Forest' : 'Quan trắc Landsat 8/9'))
+        : (bType === 'daily_7d' ? 'Dự báo 7 ngày' : (bType === 'monthly_12m' ? 'Dự báo 12 tháng' : 'Quan trắc thực tế'));
+    const mapSubtitle = `${draft.period_start === draft.period_end ? draft.period_start : `${draft.period_start} → ${draft.period_end}`} · ${mapTypeTag}`;
+    const displayTitle = _cleanBulletinTextForRole(draft.title || 'BẢN TIN GIÁM SÁT & DỰ BÁO KHÔ HẠN TVDI');
+    const displayHighlights = _cleanBulletinTextForRole(draft.highlights || '');
+    const displayRecommendations = _cleanBulletinTextForRole(draft.recommendations || '');
     const mapDataUrl = renderBulletinMapDataUrl(activeKey, mapSubtitle);
     const { seriesImg, distImg } = renderBulletinChartsDataUrls(seriesPoints, levelCounts, activeKey, bType);
     bulletinState.lastMapDataUrl = mapDataUrl;
@@ -472,7 +513,7 @@ function renderBulletinPaperFromDraft(draft) {
         <div class="bul-banner">
             <div class="bul-banner-left">
                 <div class="bul-sys-name">HỆ THỐNG GIÁM SÁT MỨC ĐỘ KHÔ HẠN TẠI TP.HCM</div>
-                <h2>${_escapeHtml(draft.title || 'BẢN TIN GIÁM SÁT & DỰ BÁO KHÔ HẠN TVDI')}</h2>
+                <h2>${_escapeHtml(displayTitle)}</h2>
                 <div class="bul-meta-row">
                     ${_formatHorizonBadge(bType)}
                     <span><i class="fa-regular fa-calendar"></i> Thời gian: <strong>${_escapeHtml(draft.period_start)}</strong>${draft.period_end && draft.period_end !== draft.period_start ? ` → <strong>${_escapeHtml(draft.period_end)}</strong>` : ''}</span>
@@ -592,11 +633,11 @@ function renderBulletinPaperFromDraft(draft) {
             <div class="rep-sec-title">V. Nhận định tổng hợp &amp; Khuyến nghị ứng phó</div>
             <div class="bul-highlight-box">
                 <strong><i class="fa-solid fa-magnifying-glass-chart"></i> Tóm tắt hiện trạng / dự báo:</strong>
-                <p>${_escapeHtml(draft.highlights || '')}</p>
+                <p>${_escapeHtml(displayHighlights)}</p>
             </div>
             <div class="rep-recom-box" style="margin-top:8px;">
                 <strong><i class="fa-solid fa-shield-halved"></i> Khuyến nghị kỹ thuật:</strong>
-                <p style="margin:4px 0 0 0;">${_escapeHtml(draft.recommendations || '')}</p>
+                <p style="margin:4px 0 0 0;">${_escapeHtml(displayRecommendations)}</p>
             </div>
         </div>
     `;
@@ -631,7 +672,9 @@ async function generateReportPaper(savedBulletin = null) {
     }
 
     try {
-        const res = await fetch(`/api/bulletins/draft?${query}`);
+        const headers = {};
+        if (state.auth && state.auth.token) headers['Authorization'] = `Bearer ${state.auth.token}`;
+        const res = await fetch(`/api/bulletins/draft?${query}`, { headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const draft = await res.json();
         renderBulletinPaperFromDraft(draft);
@@ -647,7 +690,9 @@ async function loadBulletinsHistory() {
     listEl.innerHTML = '<div class="bul-loading"><i class="fa-solid fa-spinner fa-spin"></i> Đang tải danh sách bản tin đã lưu...</div>';
 
     try {
-        const res = await fetch('/api/bulletins');
+        const headers = {};
+        if (state.auth && state.auth.token) headers['Authorization'] = `Bearer ${state.auth.token}`;
+        const res = await fetch('/api/bulletins', { headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const items = data.bulletins || [];
@@ -662,10 +707,11 @@ async function loadBulletinsHistory() {
             const avgT = st.avg_tvdi !== null && st.avg_tvdi !== undefined ? Number(st.avg_tvdi).toFixed(3) : '--';
             const dPct = st.drought_pct !== null && st.drought_pct !== undefined ? `${Number(st.drought_pct).toFixed(1)}%` : '--';
             const created = b.created_at ? b.created_at.substring(0, 16).replace('T', ' ') : '';
+            const safeTitle = _cleanBulletinTextForRole(b.title);
             return `
                 <div class="bul-history-card" data-id="${b.id}">
                     <div class="bul-history-main">
-                        <div class="bul-history-title">${_escapeHtml(b.title)}</div>
+                        <div class="bul-history-title">${_escapeHtml(safeTitle)}</div>
                         <div class="bul-history-meta">
                             ${_formatHorizonBadge(b.bulletin_type)}
                             <span>Kỳ: <strong>${_escapeHtml(b.period_start)}</strong>${b.period_end !== b.period_start ? ` → <strong>${_escapeHtml(b.period_end)}</strong>` : ''}</span>
@@ -799,12 +845,15 @@ async function exportBulletinPNG() {
     ctx.fillStyle = '#93c5fd';
     ctx.font = 'bold 13px "Segoe UI", Arial, sans-serif';
     ctx.fillText('HỆ THỐNG GIÁM SÁT MỨC ĐỘ KHÔ HẠN TẠI TP.HCM', 36, 30);
+    const safeTitle = _cleanBulletinTextForRole(d.title || 'BẢN TIN GIÁM SÁT & DỰ BÁO KHÔ HẠN TVDI');
+    const periodTxt = `Kỳ: ${d.period_start}${d.period_end !== d.period_start ? ' -> ' + d.period_end : ''}`;
+    const metaTxt = _isBulletinAdmin() ? `${periodTxt} | Nguồn: ${d.satellite_source || 'LANDSAT'}` : periodTxt;
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 22px "Segoe UI", Arial, sans-serif';
-    ctx.fillText(d.title || 'BẢN TIN GIÁM SÁT & DỰ BÁO KHÔ HẠN TVDI', 36, 62);
+    ctx.fillText(safeTitle, 36, 62);
     ctx.fillStyle = '#cbd5e1';
     ctx.font = '13px "Segoe UI", Arial, sans-serif';
-    ctx.fillText(`Kỳ: ${d.period_start}${d.period_end !== d.period_start ? ' -> ' + d.period_end : ''} | Nguồn: ${d.satellite_source || 'LANDSAT'}`, 36, 84);
+    ctx.fillText(metaTxt, 36, 84);
 
     // 4 KPI cards
     const kpis = [
@@ -869,7 +918,9 @@ async function exportBulletinPNG() {
     curY += 20;
     ctx.fillStyle = '#334155';
     ctx.font = '13px "Segoe UI", Arial, sans-serif';
-    curY = _drawWrappedText(ctx, `${d.highlights || ''} ${d.recommendations || ''}`, 36, curY, W - 72, 20);
+    const safeHighlights = _cleanBulletinTextForRole(d.highlights || '');
+    const safeRecs = _cleanBulletinTextForRole(d.recommendations || '');
+    curY = _drawWrappedText(ctx, `${safeHighlights} ${safeRecs}`.trim(), 36, curY, W - 72, 20);
 
     const link = document.createElement('a');
     const dtTag = (d.period_start || getTodayDateStr()).replace(/[^0-9-]/g, '');

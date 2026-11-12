@@ -25,12 +25,20 @@ function _mcDefaultTitle(layerKey) {
 function _mcDefaultSubtitle() {
     const dStr = state.currentDate || (typeof getTodayDateStr === 'function' ? getTodayDateStr() : '');
     const viewDesc = (typeof describeCurrentView === 'function') ? describeCurrentView(false) : dStr;
+    const isAdmin = (typeof isAdminUser === 'function') ? isAdminUser() : false;
     if (state.isAIMode || (typeof isForecastDate === 'function' && isForecastDate(dStr))) {
+        if (!isAdmin) {
+            return state.forecastHorizon === 'monthly_12m'
+                ? `Dự báo 12 tháng · ${viewDesc}`
+                : `Dự báo 7 ngày · ${viewDesc}`;
+        }
         return state.forecastHorizon === 'monthly_12m'
             ? `Dự báo 12 tháng (AI Random Forest) · ${viewDesc}`
             : `Dự báo 7 ngày (Giả lập · Landsat 8/9) · ${viewDesc}`;
     }
-    return `Quan trắc viễn thám thực tế Landsat 8/9 · ${viewDesc}`;
+    return isAdmin
+        ? `Quan trắc viễn thám thực tế Landsat 8/9 · ${viewDesc}`
+        : `Quan trắc thực tế · ${viewDesc}`;
 }
 
 function _mcReadComposerConfig() {
@@ -541,13 +549,14 @@ function _mcDrawMetaPanel(ctx, x, y, w, availH, cfg) {
 
     const now = new Date();
     const exportDate = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+    const isAdmin = (typeof isAdminUser === 'function') ? isAdminUser() : false;
     const lines = [
         `Hệ thống: Giám sát Mức độ Khô hạn tại TP.HCM`,
         `Hệ tọa độ: WGS 84 (EPSG:4326)`,
         `Chỉ số chính: ${meta.label}`,
         `Mốc dữ liệu: ${dStr}`,
         `Thể hiện: ${cfg.displayMode === 'ward' ? 'Theo 167 Phường/Xã' : 'Raster bề mặt liên tục'}`,
-        `Nguồn ảnh: Landsat 8/9 · GEE`,
+        ...(isAdmin ? [`Nguồn ảnh: Landsat 8/9 · GEE`] : []),
         `Ngày xuất: ${exportDate}`,
     ];
 

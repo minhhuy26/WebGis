@@ -4,6 +4,7 @@ Hỗ trợ sinh bản tin tổng hợp (bản đồ, biểu đồ, bảng, nhậ
 lưu trữ bản tin phát hành và truy xuất lịch sử bản tin.
 """
 import json
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -46,6 +47,45 @@ def _optional_username(authorization: Optional[str]) -> str:
     if payload and payload.get("sub"):
         return str(payload["sub"])
     return "system"
+
+
+def _is_admin_request(authorization: Optional[str]) -> bool:
+    if not authorization:
+        return False
+    parts = authorization.strip().split()
+    token = parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else parts[0]
+    payload = decode_token(token)
+    return bool(payload and payload.get("role") == "admin")
+
+
+def _sanitize_bulletin_text(val: Optional[str]) -> str:
+    raw = str(val or "")
+    if not raw:
+        return ""
+    cleaned = re.sub(r"\s*\(AI Random Forest\)", "", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*\(Giả lập(?:\s*[·\-]\s*Landsat(?:\s*8/9)?)?\)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\(Kỳ\s+Landsat\s+", "(Kỳ ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"Dự báo\s+AI\s+Random Forest", "Dự báo", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"Quan trắc\s+vệ tinh\s+Landsat(?:\s*8/9)?", "Quan trắc", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*Số liệu dự báo 7 ngày được mô phỏng giả lập[^.]*\.", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*Số liệu dự báo 12 tháng được tính toán từ mô hình AI Random Forest[^.]*\.", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*Số liệu quan trắc thực tế từ ảnh viễn thám Landsat[^.]*\.", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*theo chu kỳ vệ tinh(?=\s)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*(?:Landsat\s*8/9|Landsat|Google Earth Engine|Random Forest)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bAI\b", "", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\s+([,.;:)])", r"\1", cleaned)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def _sanitize_bulletin_for_non_admin(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        **item,
+        "title": _sanitize_bulletin_text(item.get("title")),
+        "satellite_source": "",
+        "highlights": _sanitize_bulletin_text(item.get("highlights")),
+        "recommendations": _sanitize_bulletin_text(item.get("recommendations")),
+    }
 
 
 def _build_recommendations_text(drought_pct: float, avg_tvdi: Optional[float], horizon: str) -> str:
@@ -424,14 +464,20 @@ def get_auto_bulletin_draft(
     horizon: str = Query("observed"),
     start: Optional[str] = None,
     end: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """Sinh bản nháp bản tin tự động từ dữ liệu PostGIS theo mốc/khung thời gian."""
-    return build_bulletin_draft(db, target_date=date_str, horizon=horizon, start=start, end=end)
+    draft = build_bulletin_draft(db, target_date=date_str, horizon=horizon, start=start, end=end)
+    return draft if _is_admin_request(authorization) else _sanitize_bulletin_for_non_admin(draft)
 
 
 @router.get("")
-def list_bulletins(limit: int = 30, db: Session = Depends(get_db)):
+def list_bulletins(
+    limit: int = 30,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
     """Lấy danh sách các bản tin đã lưu trong CSDL (tvdi.bulletins)."""
     _ensure_default_bulletins(db)
     rows = db.execute(
@@ -445,11 +491,19 @@ def list_bulletins(limit: int = 30, db: Session = Depends(get_db)):
         """),
         {"lim": max(1, min(limit, 100))},
     ).fetchall()
-    return {"bulletins": [_serialize_bulletin_row(r) for r in rows]}
+    is_admin = _is_admin_request(authorization)
+    items = [_serialize_bulletin_row(r) for r in rows]
+    if not is_admin:
+        items = [_sanitize_bulletin_for_non_admin(it) for it in items]
+    return {"bulletins": items}
 
 
 @router.get("/{bulletin_id}")
-def get_bulletin(bulletin_id: int, db: Session = Depends(get_db)):
+def get_bulletin(
+    bulletin_id: int,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
     """Lấy chi tiết 1 bản tin theo ID."""
     row = db.execute(
         text("""
@@ -463,7 +517,8 @@ def get_bulletin(bulletin_id: int, db: Session = Depends(get_db)):
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản tin.")
-    return _serialize_bulletin_row(row)
+    item = _serialize_bulletin_row(row)
+    return item if _is_admin_request(authorization) else _sanitize_bulletin_for_non_admin(item)
 
 
 @router.post("")

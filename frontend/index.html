@@ -148,10 +148,10 @@
     <!-- Thanh điều khiển thời gian (1 hàng): chế độ · mốc thời gian · trình chiếu · tìm kiếm -->
     <section class="toolbar">
         <div class="seg-control mode-seg" role="group" aria-label="Chế độ dữ liệu">
-            <button id="btn-mode-monitor" class="seg-btn" title="Ảnh viễn thám thực tế Landsat 8/9 (2017–2025)">
-                <i class="fa-solid fa-satellite"></i> Giám sát
+            <button id="btn-mode-monitor" class="seg-btn" title="Dữ liệu quan trắc thực tế (2017–2025)">
+                <i class="fa-solid fa-eye"></i> Giám sát
             </button>
-            <button id="btn-mode-forecast" class="seg-btn active" title="Dự báo theo ngày (7 ngày giả lập) & theo tháng (12 tháng AI)">
+            <button id="btn-mode-forecast" class="seg-btn active" title="Dự báo theo ngày (7 ngày) &amp; theo tháng (12 tháng)">
                 <i class="fa-solid fa-wand-magic-sparkles"></i> Dự báo
             </button>
         </div>
@@ -178,7 +178,7 @@
         </select>
         <span id="forecast-source-pill" class="forecast-source-pill is-sim admin-tech-only" title="Thông số nguồn dự báo (Quản trị viên)">Giả lập · Landsat</span>
 
-        <select id="aggregation-select" class="tb-select" style="display: none;" title="Cách tổng hợp ảnh quan trắc Landsat (2017–2025)">
+        <select id="aggregation-select" class="tb-select" style="display: none;" title="Cách tổng hợp dữ liệu quan trắc (2017–2025)">
             <option value="cycle">Theo kỳ 15 ngày</option>
             <option value="month">TB tháng</option>
             <option value="year">TB năm</option>
@@ -289,11 +289,11 @@
                     <button type="button" class="btn-card-toggle" id="btn-close-map-info" title="Đóng"><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <ul>
-                    <li><strong>Ảnh vệ tinh:</strong> Landsat 8/9 Collection 2 Level-2 (USGS), lọc mây bằng QA_PIXEL.</li>
-                    <li><strong>Chỉ số:</strong> LST (°C) từ kênh nhiệt ST_B10; NDVI từ SR_B5, SR_B4; TVDI từ không gian LST–NDVI (biên khô – biên ướt).</li>
-                    <li><strong>Lớp Pixel:</strong> ảnh tổng hợp tháng ~120 m xuất từ Google Earth Engine. Kỳ không có ảnh tháng và mốc dự báo: lưới ~5,5 km (283 ô, PostGIS) chi tiết hóa 120 m theo mẫu không gian Landsat cùng tháng.</li>
+                    <li class="admin-tech-only"><strong>Ảnh vệ tinh:</strong> Landsat 8/9 Collection 2 Level-2 (USGS), lọc mây bằng QA_PIXEL.</li>
+                    <li><strong>Chỉ số:</strong> LST (°C)<span class="admin-tech-only"> từ kênh nhiệt ST_B10</span>; NDVI<span class="admin-tech-only"> từ SR_B5, SR_B4</span>; TVDI từ không gian LST–NDVI (biên khô – biên ướt).</li>
+                    <li class="admin-tech-only"><strong>Lớp Pixel:</strong> ảnh tổng hợp tháng ~120 m xuất từ Google Earth Engine. Kỳ không có ảnh tháng và mốc dự báo: lưới ~5,5 km (283 ô, PostGIS) chi tiết hóa 120 m theo mẫu không gian Landsat cùng tháng.</li>
                     <li><strong>Phường/Xã:</strong> 167 phường, xã đất liền theo ranh giới ĐVHC cấp xã 2025 (Nghị quyết 1685/NQ-UBTVQH15).</li>
-                    <li><strong>Dự báo:</strong> Theo tháng (12 tháng) dùng mô hình Random Forest (scikit-learn); theo ngày (7 ngày) dùng dữ liệu giả lập (do Landsat chu kỳ ~15 ngày).</li>
+                    <li class="admin-tech-only"><strong>Dự báo:</strong> Theo tháng (12 tháng) dùng mô hình Random Forest (scikit-learn); theo ngày (7 ngày) dùng dữ liệu giả lập (do Landsat chu kỳ ~15 ngày).</li>
                 </ul>
             </div>
 
@@ -424,16 +424,16 @@
                     </div>
                     <div class="card-body chart-body">
                         <div class="chart-mode-segmented">
-                            <button id="btn-mode-7days" class="chart-mode-btn active" title="Dự báo theo ngày (7 ngày tới – dữ liệu giả lập với ảnh Landsat)">
+                            <button id="btn-mode-7days" class="chart-mode-btn active" title="Dự báo theo ngày (7 ngày tới)">
                                 <i class="fa-solid fa-calendar-day"></i> 7 ngày
                             </button>
-                            <button id="btn-mode-12months" class="chart-mode-btn" title="Dự báo theo tháng (12 tháng tới – mô hình AI Random Forest)">
+                            <button id="btn-mode-12months" class="chart-mode-btn" title="Dự báo theo tháng (12 tháng tới)">
                                 <i class="fa-solid fa-calendar-days"></i> 12 tháng
                             </button>
-                            <button id="btn-mode-history" class="chart-mode-btn" title="Chuỗi quan sát viễn thám thực tế 2017–2025 (LST / NDVI / TVDI)">
+                            <button id="btn-mode-history" class="chart-mode-btn" title="Chuỗi quan sát thực tế 2017–2025 (LST / NDVI / TVDI)">
                                 <i class="fa-solid fa-clock-rotate-left"></i> Lịch sử
                             </button>
-                            <button id="btn-mode-compare" class="chart-mode-btn" title="So sánh TVDI thực tế (Landsat) và giá trị dự báo của mô hình Random Forest">
+                            <button id="btn-mode-compare" class="chart-mode-btn admin-tech-only" title="So sánh TVDI thực tế (Landsat) và giá trị dự báo của mô hình Random Forest">
                                 <i class="fa-solid fa-code-compare"></i> Thực tế vs AI
                             </button>
                         </div>
@@ -1021,7 +1021,7 @@
             <div class="modal-body mc-modal-body">
                 <div class="mc-workspace">
                     <aside class="mc-sidebar">
-                        <div class="mc-group-title"><i class="fa-solid fa-heading"></i> Tiêu đề &amp; Nguồn</div>
+                        <div class="mc-group-title"><i class="fa-solid fa-heading"></i> Tiêu đề &amp; Phụ đề</div>
                         <label class="mc-field">
                             <span>Tiêu đề bản đồ</span>
                             <input type="text" id="mc-title-input" value="BẢN ĐỒ PHÂN VÙNG CHỈ SỐ KHÔ HẠN TVDI – TP. HỒ CHÍ MINH" />
@@ -1100,13 +1100,13 @@
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <!-- App JS (v12.1) -->
-    <script src="/static/js/bulletin.js?v=12.1"></script>
-    <script src="/static/js/map-composer.js?v=12.1"></script>
-    <script src="/static/js/app.js?v=12.1"></script>
-    <script src="/static/js/map-decor.js?v=12.1"></script>
-    <script src="/static/js/map3d.js?v=12.1"></script>
-    <script src="/static/js/analysis.js?v=12.1"></script>
-    <script src="/static/js/pixel-raster.js?v=12.1"></script>
+    <!-- App JS (v12.2) -->
+    <script src="/static/js/bulletin.js?v=12.2"></script>
+    <script src="/static/js/map-composer.js?v=12.2"></script>
+    <script src="/static/js/app.js?v=12.2"></script>
+    <script src="/static/js/map-decor.js?v=12.2"></script>
+    <script src="/static/js/map3d.js?v=12.2"></script>
+    <script src="/static/js/analysis.js?v=12.2"></script>
+    <script src="/static/js/pixel-raster.js?v=12.2"></script>
 </body>
 </html>
