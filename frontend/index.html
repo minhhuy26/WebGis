@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebGIS Giám sát & Dự báo Chỉ số Khô hạn TVDI – TP. Hồ Chí Minh</title>
+    <title>Hệ thống Giám sát Mức độ Khô hạn tại TP.HCM</title>
 
     <!-- Font Awesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
@@ -20,8 +20,8 @@
         <div class="header-left">
             <div class="logo-icon"><i class="fa-solid fa-earth-asia"></i></div>
             <div class="header-titles">
-                <h1>WebGIS Giám sát &amp; Dự báo Khô hạn TVDI</h1>
-                <span class="header-sub">TP. Hồ Chí Minh mở rộng · Landsat 8/9 · Random Forest</span>
+                <h1>Hệ thống Giám sát Mức độ Khô hạn tại TP.HCM</h1>
+                <span class="header-sub admin-tech-only" id="header-tech-sub">TP. Hồ Chí Minh mở rộng · Landsat 8/9 · Random Forest</span>
             </div>
         </div>
         <div class="header-right">
@@ -31,17 +31,21 @@
                 <span class="status-text">Đang kết nối PostGIS...</span>
             </div>
 
-            <!-- Xuất báo cáo -->
-            <button id="btn-open-report" class="btn btn-header-ghost" title="Xuất báo cáo thống kê hạn hán PDF / Excel">
-                <i class="fa-solid fa-file-arrow-down"></i>
-                <span>Báo cáo</span>
+            <!-- Thành lập bản đồ & Bản tin -->
+            <button id="btn-open-map-composer" class="btn btn-header-ghost" title="Công cụ Thành lập Bản đồ chuyên đề & Export PNG / PDF">
+                <i class="fa-solid fa-map"></i>
+                <span>Thành lập bản đồ</span>
+            </button>
+            <button id="btn-open-report" class="btn btn-header-ghost" title="Bản tin tổng hợp (Bản đồ, Biểu đồ, Bảng) & Xuất báo cáo PDF / PNG / Excel">
+                <i class="fa-solid fa-newspaper"></i>
+                <span>Bản tin</span>
             </button>
 
             <!-- Menu người dùng với Cài đặt & Đăng xuất (Chỉ hiển thị khi đã đăng nhập) -->
             <div class="user-menu-wrapper" id="user-menu-wrapper" style="display: none;">
                 <button class="btn-user-profile" id="btn-user-profile" title="Tùy chọn tài khoản và cài đặt">
                     <span id="badge-role-text" class="badge-role user">
-                        <i class="fa-solid fa-user-check"></i> <span id="header-user-name">xyz</span>
+                        <i class="fa-solid fa-user-check"></i> <span id="header-user-name">Người dùng</span>
                     </span>
                     <i class="fa-solid fa-chevron-down user-dropdown-caret"></i>
                 </button>
@@ -53,7 +57,7 @@
                             <i class="fa-solid fa-user-check"></i>
                         </div>
                         <div class="user-dropdown-info">
-                            <div class="user-dropdown-name" id="user-dropdown-name">xyz</div>
+                            <div class="user-dropdown-name" id="user-dropdown-name">Người dùng</div>
                             <div class="user-dropdown-role" id="user-dropdown-role">Người dùng</div>
                         </div>
                     </div>
@@ -147,28 +151,34 @@
             <button id="btn-mode-monitor" class="seg-btn" title="Ảnh viễn thám thực tế Landsat 8/9 (2017–2025)">
                 <i class="fa-solid fa-satellite"></i> Giám sát
             </button>
-            <button id="btn-mode-forecast" class="seg-btn active" title="Dự báo khô hạn TVDI bằng mô hình Random Forest">
-                <i class="fa-solid fa-wand-magic-sparkles"></i> Dự báo AI
+            <button id="btn-mode-forecast" class="seg-btn active" title="Dự báo theo ngày (7 ngày giả lập) & theo tháng (12 tháng AI)">
+                <i class="fa-solid fa-wand-magic-sparkles"></i> Dự báo
             </button>
         </div>
 
         <span class="tb-divider"></span>
 
         <div class="time-control">
-            <button type="button" id="btn-toolbar-prev" class="tc-step" title="Kỳ trước">
+            <button type="button" id="btn-toolbar-prev" class="tc-step" title="Mốc trước">
                 <i class="fa-solid fa-chevron-left"></i>
             </button>
             <label class="tc-date" title="Chọn ngày bất kỳ (2017 – 2027)">
                 <i class="fa-regular fa-calendar"></i>
                 <input type="date" id="toolbar-date-picker" min="2017-01-01" max="2027-12-31" />
             </label>
-            <select id="date-select" class="tc-cycle" title="Chọn nhanh một kỳ 15 ngày trong năm"></select>
-            <button type="button" id="btn-toolbar-next" class="tc-step" title="Kỳ sau">
+            <select id="date-select" class="tc-cycle" title="Chọn nhanh mốc thời gian"></select>
+            <button type="button" id="btn-toolbar-next" class="tc-step" title="Mốc sau">
                 <i class="fa-solid fa-chevron-right"></i>
             </button>
         </div>
 
-        <select id="aggregation-select" class="tb-select" title="Cách tổng hợp ảnh quan trắc Landsat (2017–2025)">
+        <select id="forecast-horizon-select" class="tb-select" title="Chọn khung dự báo theo ngày hoặc theo tháng">
+            <option value="daily_7d">Theo ngày (7 ngày)</option>
+            <option value="monthly_12m">Theo tháng (12 tháng)</option>
+        </select>
+        <span id="forecast-source-pill" class="forecast-source-pill is-sim admin-tech-only" title="Thông số nguồn dự báo (Quản trị viên)">Giả lập · Landsat</span>
+
+        <select id="aggregation-select" class="tb-select" style="display: none;" title="Cách tổng hợp ảnh quan trắc Landsat (2017–2025)">
             <option value="cycle">Theo kỳ 15 ngày</option>
             <option value="month">TB tháng</option>
             <option value="year">TB năm</option>
@@ -283,7 +293,7 @@
                     <li><strong>Chỉ số:</strong> LST (°C) từ kênh nhiệt ST_B10; NDVI từ SR_B5, SR_B4; TVDI từ không gian LST–NDVI (biên khô – biên ướt).</li>
                     <li><strong>Lớp Pixel:</strong> ảnh tổng hợp tháng ~120 m xuất từ Google Earth Engine. Kỳ không có ảnh tháng và mốc dự báo: lưới ~5,5 km (283 ô, PostGIS) chi tiết hóa 120 m theo mẫu không gian Landsat cùng tháng.</li>
                     <li><strong>Phường/Xã:</strong> 167 phường, xã đất liền theo ranh giới ĐVHC cấp xã 2025 (Nghị quyết 1685/NQ-UBTVQH15).</li>
-                    <li><strong>Dự báo:</strong> mô hình Random Forest (scikit-learn) – chỉ dự báo chỉ số TVDI.</li>
+                    <li><strong>Dự báo:</strong> Theo tháng (12 tháng) dùng mô hình Random Forest (scikit-learn); theo ngày (7 ngày) dùng dữ liệu giả lập (do Landsat chu kỳ ~15 ngày).</li>
                 </ul>
             </div>
 
@@ -299,7 +309,7 @@
                     <div class="legend-header-left">
                         <span class="legend-title" id="legend-title"><i class="fa-solid fa-droplet"></i> TVDI – Chỉ số khô hạn thực vật</span>
                     </div>
-                    <span class="legend-badge" id="legend-badge">pixel 120 m</span>
+                    <span class="legend-badge admin-tech-only" id="legend-badge">pixel 120 m</span>
                     <button id="btn-toggle-legend" class="btn-card-toggle" title="Xem bảng phân cấp chi tiết">
                         <i class="fa-solid fa-chevron-up"></i>
                     </button>
@@ -414,11 +424,14 @@
                     </div>
                     <div class="card-body chart-body">
                         <div class="chart-mode-segmented">
-                            <button id="btn-mode-15days" class="chart-mode-btn active" title="Dự báo chu kỳ 15 ngày liên tiếp (Realtime)">
-                                <i class="fa-solid fa-bolt"></i> Dự báo 15 ngày
+                            <button id="btn-mode-7days" class="chart-mode-btn active" title="Dự báo theo ngày (7 ngày tới – dữ liệu giả lập với ảnh Landsat)">
+                                <i class="fa-solid fa-calendar-day"></i> 7 ngày
                             </button>
-                            <button id="btn-mode-history" class="chart-mode-btn" title="Chuỗi quan sát viễn thám thực tế 2017–2025 của chỉ số đang chọn (LST / NDVI / TVDI)">
-                                <i class="fa-solid fa-clock-rotate-left"></i> Lịch sử 2017–2025
+                            <button id="btn-mode-12months" class="chart-mode-btn" title="Dự báo theo tháng (12 tháng tới – mô hình AI Random Forest)">
+                                <i class="fa-solid fa-calendar-days"></i> 12 tháng
+                            </button>
+                            <button id="btn-mode-history" class="chart-mode-btn" title="Chuỗi quan sát viễn thám thực tế 2017–2025 (LST / NDVI / TVDI)">
+                                <i class="fa-solid fa-clock-rotate-left"></i> Lịch sử
                             </button>
                             <button id="btn-mode-compare" class="chart-mode-btn" title="So sánh TVDI thực tế (Landsat) và giá trị dự báo của mô hình Random Forest">
                                 <i class="fa-solid fa-code-compare"></i> Thực tế vs AI
@@ -431,7 +444,7 @@
                                 <span class="loc-text" id="chart-loc-name">Toàn vùng TP.HCM</span>
                             </div>
                             <div class="chart-loc-range" id="chart-loc-range">
-                                <span id="chart-range-text">15 ngày</span>
+                                <span id="chart-range-text">7 ngày</span>
                             </div>
                         </div>
 
@@ -760,15 +773,15 @@
                         <tbody>
                             <tr>
                                 <td style="padding: 6px 10px; border: 1px solid #e2e8f0;"><strong>Toàn vùng (Trung bình)</strong></td>
-                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0; color: #16a34a; font-weight: 700;">0.289</td>
-                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.048</td>
-                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.038</td>
+                                <td id="ai-eval-overall-r2" style="padding: 6px 10px; border: 1px solid #e2e8f0; color: #16a34a; font-weight: 700;">--</td>
+                                <td id="ai-eval-overall-rmse" style="padding: 6px 10px; border: 1px solid #e2e8f0;">--</td>
+                                <td id="ai-eval-overall-mae" style="padding: 6px 10px; border: 1px solid #e2e8f0;">--</td>
                             </tr>
                             <tr>
                                 <td style="padding: 6px 10px; border: 1px solid #e2e8f0;"><strong>283 Ô lưới chi tiết</strong></td>
-                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0; color: #16a34a; font-weight: 700;">0.310</td>
-                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.159</td>
-                                <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">0.119</td>
+                                <td id="ai-eval-grid-r2" style="padding: 6px 10px; border: 1px solid #e2e8f0; color: #16a34a; font-weight: 700;">--</td>
+                                <td id="ai-eval-grid-rmse" style="padding: 6px 10px; border: 1px solid #e2e8f0;">--</td>
+                                <td id="ai-eval-grid-mae" style="padding: 6px 10px; border: 1px solid #e2e8f0;">--</td>
                             </tr>
                         </tbody>
                     </table>
@@ -799,12 +812,18 @@
         </div>
     </div>
 
-    <!-- Modal Báo cáo thống kê Hạn hán TVDI -->
+    <!-- Modal Bản tin & Báo cáo thống kê Hạn hán TVDI -->
     <div id="report-modal" class="modal-backdrop" style="display: none;" onclick="if(event.target===this) this.style.display='none'">
         <div class="modal-dialog report-dialog">
             <div class="modal-header">
-                <h3><i class="fa-solid fa-file-invoice"></i> Báo cáo Giám sát & Dự báo Khô hạn TVDI</h3>
+                <h3><i class="fa-solid fa-newspaper"></i> Bản tin Giám sát &amp; Dự báo Khô hạn TVDI</h3>
                 <div class="report-header-actions">
+                    <button id="btn-save-bulletin" class="btn btn-secondary" title="Lưu bản tin hiện tại vào CSDL PostgreSQL (tvdi.bulletins)">
+                        <i class="fa-solid fa-bookmark"></i> <span>Lưu bản tin</span>
+                    </button>
+                    <button id="btn-export-bulletin-png" class="btn btn-secondary" title="Tải xuống ảnh Bản tin tổng hợp (PNG)">
+                        <i class="fa-solid fa-image"></i> <span>Tải PNG</span>
+                    </button>
                     <button id="btn-print-report" class="btn btn-primary" title="In trực tiếp hoặc Lưu file PDF A4">
                         <i class="fa-solid fa-print"></i> <span>In / Lưu PDF</span>
                     </button>
@@ -817,11 +836,22 @@
                     <button class="modal-close" id="btn-close-report-modal">&times;</button>
                 </div>
             </div>
+            <div class="bul-tabs-bar">
+                <button type="button" class="bul-tab-btn active" id="btn-bul-tab-preview">
+                    <i class="fa-solid fa-file-lines"></i> Bản tin hiện tại (Bản đồ · Biểu đồ · Bảng)
+                </button>
+                <button type="button" class="bul-tab-btn" id="btn-bul-tab-history">
+                    <i class="fa-solid fa-clock-rotate-left"></i> Kho Bản tin đã lưu
+                </button>
+            </div>
             <div class="modal-body report-modal-body">
                 <div class="report-paper" id="report-paper"></div>
+                <div class="bul-history-panel" id="bulletin-history-panel" style="display: none;">
+                    <div id="bulletin-history-list"></div>
+                </div>
             </div>
             <div class="modal-footer report-modal-footer">
-                <span class="report-note"><i class="fa-solid fa-circle-info"></i> Mẹo: Chọn "Save as PDF" trong hộp thoại In để lưu báo cáo dưới dạng tệp tin PDF chuẩn A4.</span>
+                <span class="report-note"><i class="fa-solid fa-circle-info"></i> Bản tin tổng hợp trực quan Bản đồ + Biểu đồ + Bảng số liệu; chọn "In / Lưu PDF" → "Save as PDF" để lưu tệp A4.</span>
                 <button id="btn-close-report-footer" class="btn btn-secondary">Đóng</button>
             </div>
         </div>
@@ -970,6 +1000,97 @@
         </div>
     </div>
 
+    <!-- Modal Thành lập Bản đồ Chuyên đề & Export PNG / PDF -->
+    <div id="map-composer-modal" class="modal-backdrop" style="display: none;" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-dialog map-composer-dialog">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-map"></i> Thành lập Bản đồ Chuyên đề (Export PNG / PDF)</h3>
+                <div class="report-header-actions">
+                    <button id="btn-mc-export-png" class="btn btn-success" title="Xuất bản đồ chuyên đề chất lượng cao (PNG)">
+                        <i class="fa-solid fa-image"></i> <span>Xuất ảnh PNG</span>
+                    </button>
+                    <button id="btn-mc-export-pdf" class="btn btn-primary" title="In hoặc lưu thành tệp bản đồ PDF A4">
+                        <i class="fa-solid fa-file-pdf"></i> <span>Xuất PDF</span>
+                    </button>
+                    <button id="btn-mc-export-geojson" class="btn btn-geojson" title="Tải lớp dữ liệu GeoJSON">
+                        <i class="fa-solid fa-map-location-dot"></i> <span>GeoJSON</span>
+                    </button>
+                    <button class="modal-close" id="btn-close-map-composer">&times;</button>
+                </div>
+            </div>
+            <div class="modal-body mc-modal-body">
+                <div class="mc-workspace">
+                    <aside class="mc-sidebar">
+                        <div class="mc-group-title"><i class="fa-solid fa-heading"></i> Tiêu đề &amp; Nguồn</div>
+                        <label class="mc-field">
+                            <span>Tiêu đề bản đồ</span>
+                            <input type="text" id="mc-title-input" value="BẢN ĐỒ PHÂN VÙNG CHỈ SỐ KHÔ HẠN TVDI – TP. HỒ CHÍ MINH" />
+                        </label>
+                        <label class="mc-field">
+                            <span>Phụ đề / Mốc thời gian</span>
+                            <input type="text" id="mc-subtitle-input" value="" />
+                        </label>
+
+                        <div class="mc-group-title"><i class="fa-solid fa-layer-group"></i> Lớp dữ liệu &amp; Khổ giấy</div>
+                        <div class="mc-row-2">
+                            <label class="mc-field">
+                                <span>Chỉ số hiển thị</span>
+                                <select id="mc-layer-select">
+                                    <option value="tvdi" selected>TVDI (Mặc định)</option>
+                                    <option value="lst">LST (°C)</option>
+                                    <option value="ndvi">NDVI</option>
+                                </select>
+                            </label>
+                            <label class="mc-field">
+                                <span>Kiểu thể hiện</span>
+                                <select id="mc-display-select">
+                                    <option value="pixel">Raster bề mặt</option>
+                                    <option value="ward">Theo 167 Phường</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="mc-row-2">
+                            <label class="mc-field">
+                                <span>Khổ giấy A4</span>
+                                <select id="mc-orient-select">
+                                    <option value="landscape" selected>Ngang (Landscape)</option>
+                                    <option value="portrait">Dọc (Portrait)</option>
+                                </select>
+                            </label>
+                            <label class="mc-field">
+                                <span>Độ phân giải</span>
+                                <select id="mc-res-select">
+                                    <option value="1.35">Chuẩn (1600px)</option>
+                                    <option value="2.0" selected>Cao (2400px)</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <div class="mc-group-title"><i class="fa-solid fa-compass-drafting"></i> Thành phần bản đồ</div>
+                        <div class="mc-checks">
+                            <label><input type="checkbox" id="mc-opt-graticule" checked /> Khung lưới tọa độ (DMS)</label>
+                            <label><input type="checkbox" id="mc-opt-wards" checked /> Ranh giới 167 Phường/Xã</label>
+                            <label><input type="checkbox" id="mc-opt-labels" checked /> Nhãn khu vực chính</label>
+                            <label><input type="checkbox" id="mc-opt-north" checked /> Mũi tên chỉ hướng Bắc</label>
+                            <label><input type="checkbox" id="mc-opt-scale" checked /> Thước tỷ lệ km</label>
+                            <label><input type="checkbox" id="mc-opt-legend" checked /> Khung chú giải 8 cấp / màu</label>
+                            <label><input type="checkbox" id="mc-opt-meta" checked /> Khung thông số WGS 84</label>
+                        </div>
+                    </aside>
+
+                    <div class="mc-preview-stage">
+                        <canvas id="map-composer-canvas"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer report-modal-footer">
+                <span class="report-note"><i class="fa-solid fa-circle-info"></i> Bản đồ được biên tập đầy đủ khung lưới tọa độ, chú giải, mũi tên Bắc và thước tỷ lệ chuẩn WGS 84.</span>
+                <button id="btn-close-mc-footer" class="btn btn-secondary">Đóng</button>
+            </div>
+        </div>
+    </div>
+    <div id="mc-print-sheet" aria-hidden="true"></div>
+
     <!-- Toast Notification Popup -->
     <div id="app-toast" class="app-toast" style="display: none;"></div>
 
@@ -979,11 +1100,13 @@
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <!-- App JS (v12.0) -->
-    <script src="/static/js/app.js?v=12.0"></script>
-    <script src="/static/js/map-decor.js?v=12.0"></script>
-    <script src="/static/js/map3d.js?v=12.0"></script>
-    <script src="/static/js/analysis.js?v=12.0"></script>
-    <script src="/static/js/pixel-raster.js?v=12.0"></script>
+    <!-- App JS (v12.1) -->
+    <script src="/static/js/bulletin.js?v=12.1"></script>
+    <script src="/static/js/map-composer.js?v=12.1"></script>
+    <script src="/static/js/app.js?v=12.1"></script>
+    <script src="/static/js/map-decor.js?v=12.1"></script>
+    <script src="/static/js/map3d.js?v=12.1"></script>
+    <script src="/static/js/analysis.js?v=12.1"></script>
+    <script src="/static/js/pixel-raster.js?v=12.1"></script>
 </body>
 </html>

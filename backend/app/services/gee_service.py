@@ -260,31 +260,9 @@ def dry_wet_edge(img, region):
     return ee.Dictionary({"a": a, "b": b, "tsMin": ts_min, "valid": valid})
 
 
-def build_composite(start_date_str: str, end_date_str: str, region):
-    """
-    Tạo ảnh ghép Landsat 8/9 median trong cửa sổ thời gian [start - pad, end + pad].
-    Tính TVDI, NDVI, LST_C cắt theo ranh giới vùng.
-    (Nguyên bản từ hàm buildComposite trong GEE_tphcm.docx)
-    """
+def _finalize_tvdi_composite(comp, n_img, region, mask_water: bool = True):
+    """Dựng không gian LST-NDVI và ghép band TVDI + gắn metadata biên khô/ướt lên ảnh."""
     import ee
-    WINDOW_DAYS = 32
-    STEP_DAYS = 15
-    PAD = (WINDOW_DAYS - STEP_DAYS) / 2  # 8.5 ngày
-
-    s = ee.Date(start_date_str)
-    e = ee.Date(end_date_str)
-
-    col = (
-        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-        .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2"))
-        .filterBounds(region)
-        .filterDate(s.advance(-PAD, "day"), e.advance(PAD, "day"))
-        .map(prep_landsat)
-    )
-
-    n = col.size()
-    empty = ee.Image.constant([0, 0]).rename(["LST_C", "NDVI"]).updateMask(0)
-    comp = ee.Image(ee.Algorithms.If(n.gt(0), col.median(), empty)).clip(region)
 
     fit = dry_wet_edge(comp, region)
     a = ee.Number(fit.get("a"))
@@ -303,10 +281,84 @@ def build_composite(start_date_str: str, end_date_str: str, region):
         .updateMask(ts_max.gt(ts_min))
         .updateMask(ee.Image.constant(valid))
     )
-    # Lọc bỏ mặt nước (NDVI >= 0)
-    tvdi = tvdi.updateMask(ndvi.gte(0))
+    if mask_water:
+        tvdi = tvdi.updateMask(ndvi.gte(0))
 
-    return comp.addBands(tvdi).select(["LST_C", "NDVI", "TVDI"])
+    img = comp.addBands(tvdi).select(["LST_C", "NDVI", "TVDI"]).set({
+        "n_img": n_img,
+        "dry_a": a,
+        "dry_b": b,
+        "ts_min": ts_min,
+        "fit_ok": valid,
+    })
+    return img
+
+
+def build_composite(
+    start_date_str: str,
+    end_date_str: str,
+    region,
+    satellite_source: str = "LANDSAT",
+    window_days: int = 32,
+):
+    """
+    Tạo ảnh ghép median trong cửa sổ thời gian cho Landsat 8/9 (30 m) hoặc MODIS (1000 m).
+    Tính LST_C, NDVI, TVDI cắt theo ranh giới vùng kèm metadata biên khô/ướt.
+    """
+    import ee
+
+    src = (satellite_source or "LANDSAT").upper()
+    s = ee.Date(start_date_str)
+    e = ee.Date(end_date_str)
+
+    if src == "MODIS":
+        # Chuẩn bị khung đa nguồn: MODIS Terra Daily LST (MOD11A1) & Surface Reflectance (MOD09GA)
+        def _prep_modis_lst(img):
+            lst = img.select("LST_Day_1km").multiply(0.02).subtract(273.15).rename("LST_C")
+            ok = lst.gt(10).And(lst.lt(65))
+            return lst.updateMask(ok)
+
+        def _prep_modis_ndvi(img):
+            nir = img.select("sur_refl_b02").multiply(0.0001)
+            red = img.select("sur_refl_b01").multiply(0.0001)
+            return nir.subtract(red).divide(nir.add(red)).rename("NDVI")
+
+        lst_col = (
+            ee.ImageCollection("MODIS/061/MOD11A1")
+            .filterBounds(region)
+            .filterDate(s, e)
+            .map(_prep_modis_lst)
+        )
+        sr_col = (
+            ee.ImageCollection("MODIS/061/MOD09GA")
+            .filterBounds(region)
+            .filterDate(s, e)
+            .map(_prep_modis_ndvi)
+        )
+        n = lst_col.size()
+        empty_lst = ee.Image.constant(0).rename("LST_C").updateMask(0)
+        empty_ndvi = ee.Image.constant(0).rename("NDVI").updateMask(0)
+        lst_img = ee.Image(ee.Algorithms.If(lst_col.size().gt(0), lst_col.median(), empty_lst))
+        ndvi_img = ee.Image(ee.Algorithms.If(sr_col.size().gt(0), sr_col.median(), empty_ndvi))
+        comp = lst_img.addBands(ndvi_img).clip(region)
+        return _finalize_tvdi_composite(comp, n, region)
+
+    # Mặc định: Landsat 8/9 C2 L2 (theo thuật toán GEE_tphcm.docx)
+    step_days = 15
+    pad = max(0.0, (window_days - step_days) / 2.0)
+
+    col = (
+        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+        .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2"))
+        .filterBounds(region)
+        .filterDate(s.advance(-pad, "day"), e.advance(pad, "day"))
+        .map(prep_landsat)
+    )
+
+    n = col.size()
+    empty = ee.Image.constant([0, 0]).rename(["LST_C", "NDVI"]).updateMask(0)
+    comp = ee.Image(ee.Algorithms.If(n.gt(0), col.median(), empty)).clip(region)
+    return _finalize_tvdi_composite(comp, n, region)
 
 
 # Tham số trực quan hóa đồng bộ với GEE script và tài liệu "Thang màu Nhiệt độ-NDVI-TVDI.pdf"
@@ -337,11 +389,13 @@ def get_tile_url_for_date(
     end_date_str: Optional[str] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
+    satellite_source: str = "LANDSAT",
 ) -> Optional[str]:
     """
     Tạo hoặc lấy URL Tile XYZ từ Google Earth Engine cho lớp được chỉ định và mốc ngày
     (hoặc khoảng [date_str, end_date_str] khi tổng hợp theo tháng/năm/giai đoạn).
     """
+    src = (satellite_source or "LANDSAT").upper()
     vis = VIS_PARAMS.get(layer_name.lower(), VIS_PARAMS["tvdi"])
     vis_min = vis["min"] if vmin is None else vmin
     vis_max = vis["max"] if vmax is None else vmax
@@ -350,17 +404,15 @@ def get_tile_url_for_date(
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         end_date_str = (dt + timedelta(days=15)).strftime("%Y-%m-%d")
 
-    cache_key = f"{layer_name}_{date_str}_{end_date_str}_{vis_min}_{vis_max}"
+    cache_key = f"{src}_{layer_name}_{date_str}_{end_date_str}_{vis_min}_{vis_max}"
     if cache_key in _cached_tile_urls:
         return _cached_tile_urls[cache_key]
 
     if not init_earth_engine():
         return None
 
-    import ee
-
     region = get_region_geometry(db)
-    comp = build_composite(date_str, end_date_str, region)
+    comp = build_composite(date_str, end_date_str, region, satellite_source=src)
 
     band_map = {"tvdi": "TVDI", "lst": "LST_C", "ndvi": "NDVI"}
     band = band_map.get(layer_name.lower(), "TVDI")
@@ -373,3 +425,336 @@ def get_tile_url_for_date(
 
     _cached_tile_urls[cache_key] = tile_url
     return tile_url
+
+
+def _safe_float(val) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return None if (f != f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def sync_gee_observation_to_db(
+    db: Session,
+    date_str: str,
+    end_date_str: Optional[str] = None,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+    window_days: int = 32,
+) -> Dict[str, Any]:
+    """
+    Trích xuất hiện trạng 3 chỉ số (LST, NDVI, TVDI) từ Google Earth Engine
+    cho 1 mốc thời gian (kỳ 15 ngày / ngày / tháng) và lưu vào PostGIS:
+    - tvdi.tvdi_grid (ô lưới ~5.5 km)
+    - tvdi.tvdi_series (trung bình toàn vùng + tham số biên khô/ướt + thống kê)
+    - tvdi.ward_observations (tổng hợp 167 phường/xã)
+    - tvdi.gee_sync_logs (nhật ký đồng bộ)
+    """
+    from . import tvdi_service
+
+    src = (satellite_source or "LANDSAT").upper()
+    gran = (granularity or "15day").lower()
+    spatial_res = 1000 if src == "MODIS" else 30
+
+    dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+    if not end_date_str:
+        step = 1 if gran == "daily" else (30 if gran == "monthly" else 15)
+        end_date_str = (dt + timedelta(days=step)).strftime("%Y-%m-%d")
+    end_dt = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+
+    log_id = db.execute(
+        text("""
+            INSERT INTO tvdi.gee_sync_logs (
+                satellite_source, granularity, start_date, end_date, status, message
+            )
+            VALUES (:src, :gran, :s, :e, 'running', 'Đang trích xuất từ GEE...')
+            RETURNING id
+        """),
+        {"src": src, "gran": gran, "s": dt, "e": end_dt},
+    ).scalar()
+    db.commit()
+
+    if not init_earth_engine():
+        msg = _gee_init_error or "Google Earth Engine chưa được xác thực."
+        db.execute(
+            text("""
+                UPDATE tvdi.gee_sync_logs
+                SET status = 'failed', message = :msg, finished_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+            """),
+            {"id": log_id, "msg": msg},
+        )
+        db.commit()
+        raise RuntimeError(msg)
+
+    try:
+        import ee
+
+        region = get_region_geometry(db)
+        comp = build_composite(
+            date_str,
+            end_date_str,
+            region,
+            satellite_source=src,
+            window_days=window_days,
+        )
+
+        # Lấy danh sách ô lưới hoạt động từ PostGIS
+        cells = db.execute(
+            text("""
+                SELECT cell_id, lon, lat
+                FROM tvdi.grid_cells
+                WHERE geom_polygon IS NOT NULL AND NOT ST_IsEmpty(geom_polygon)
+                ORDER BY cell_id ASC
+            """)
+        ).fetchall()
+
+        half = 0.025
+        ee_features = [
+            ee.Feature(
+                ee.Geometry.Rectangle(
+                    [float(c[1]) - half, float(c[2]) - half, float(c[1]) + half, float(c[2]) + half],
+                    None,
+                    False,
+                ),
+                {"cell_id": int(c[0]), "lon": float(c[1]), "lat": float(c[2])},
+            )
+            for c in cells
+        ]
+        fc = ee.FeatureCollection(ee_features)
+
+        reduce_scale = 500 if src == "MODIS" else 30
+        reduced_fc = comp.select(["LST_C", "NDVI", "TVDI"]).reduceRegions(
+            collection=fc,
+            reducer=ee.Reducer.mean(),
+            scale=reduce_scale,
+            tileScale=4,
+        )
+        grid_info = reduced_fc.getInfo()
+        meta_info = comp.toDictionary(["n_img", "dry_a", "dry_b", "ts_min", "fit_ok"]).getInfo()
+        reg_info = comp.select(["LST_C", "NDVI", "TVDI"]).reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=region,
+            scale=1000 if src == "MODIS" else 100,
+            maxPixels=1e10,
+            bestEffort=True,
+            tileScale=8,
+        ).getInfo()
+
+        n_img = int(meta_info.get("n_img") or 0)
+        dry_a = _safe_float(meta_info.get("dry_a"))
+        dry_b = _safe_float(meta_info.get("dry_b"))
+        ts_min = _safe_float(meta_info.get("ts_min"))
+        fit_ok = int(bool(meta_info.get("fit_ok")))
+
+        grid_records = []
+        grid_rows_for_wards = []
+        lst_vals, ndvi_vals, tvdi_vals = [], [], []
+
+        for feat in grid_info.get("features", []):
+            props = feat.get("properties", {})
+            lst_v = _safe_float(props.get("LST_C"))
+            ndvi_v = _safe_float(props.get("NDVI"))
+            tvdi_v = _safe_float(props.get("TVDI"))
+            if lst_v is None and ndvi_v is None and tvdi_v is None:
+                continue
+
+            cid = int(props["cell_id"])
+            lon = float(props["lon"])
+            lat = float(props["lat"])
+            if lst_v is not None:
+                lst_vals.append(lst_v)
+            if ndvi_v is not None:
+                ndvi_vals.append(ndvi_v)
+            if tvdi_v is not None:
+                tvdi_vals.append(tvdi_v)
+
+            grid_records.append({
+                "date": dt,
+                "cell_id": cid,
+                "lon": lon,
+                "lat": lat,
+                "lst_c": lst_v,
+                "ndvi": ndvi_v,
+                "tvdi": tvdi_v,
+                "n_img": n_img,
+                "satellite_source": src,
+                "granularity": gran,
+                "spatial_res_m": spatial_res,
+                "data_quality": "raw_gee",
+            })
+            grid_rows_for_wards.append((lon, lat, lst_v, ndvi_v, tvdi_v))
+
+        if grid_records:
+            db.execute(
+                text("""
+                    INSERT INTO tvdi.tvdi_grid (
+                        date, cell_id, lon, lat, lst_c, ndvi, tvdi, n_img,
+                        satellite_source, granularity, spatial_res_m, data_quality, synced_at, geom
+                    )
+                    VALUES (
+                        :date, :cell_id, :lon, :lat, :lst_c, :ndvi, :tvdi, :n_img,
+                        :satellite_source, :granularity, :spatial_res_m, :data_quality, CURRENT_TIMESTAMP,
+                        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
+                    )
+                    ON CONFLICT (date, cell_id, satellite_source, granularity) DO UPDATE SET
+                        lst_c = EXCLUDED.lst_c,
+                        ndvi = EXCLUDED.ndvi,
+                        tvdi = EXCLUDED.tvdi,
+                        n_img = EXCLUDED.n_img,
+                        spatial_res_m = EXCLUDED.spatial_res_m,
+                        data_quality = EXCLUDED.data_quality,
+                        synced_at = CURRENT_TIMESTAMP;
+                """),
+                grid_records,
+            )
+
+        reg_lst = _safe_float(reg_info.get("LST_C")) or (round(sum(lst_vals) / len(lst_vals), 3) if lst_vals else None)
+        reg_ndvi = _safe_float(reg_info.get("NDVI")) or (round(sum(ndvi_vals) / len(ndvi_vals), 4) if ndvi_vals else None)
+        reg_tvdi = _safe_float(reg_info.get("TVDI")) or (round(sum(tvdi_vals) / len(tvdi_vals), 4) if tvdi_vals else None)
+        drought_pct = (
+            round(sum(1 for v in tvdi_vals if v >= 0.625) / len(tvdi_vals) * 100.0, 2)
+            if tvdi_vals else None
+        )
+
+        db.execute(
+            text("""
+                INSERT INTO tvdi.tvdi_series (
+                    date, satellite_source, granularity, lst_c, ndvi, tvdi, n_img,
+                    dry_a, dry_b, ts_min, fit_ok,
+                    lst_min, lst_max, ndvi_min, ndvi_max, tvdi_min, tvdi_max, drought_area_pct, synced_at
+                )
+                VALUES (
+                    :date, :src, :gran, :lst_c, :ndvi, :tvdi, :n_img,
+                    :dry_a, :dry_b, :ts_min, :fit_ok,
+                    :lst_min, :lst_max, :ndvi_min, :ndvi_max, :tvdi_min, :tvdi_max, :drought_area_pct, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (date, satellite_source, granularity) DO UPDATE SET
+                    lst_c = EXCLUDED.lst_c,
+                    ndvi = EXCLUDED.ndvi,
+                    tvdi = EXCLUDED.tvdi,
+                    n_img = EXCLUDED.n_img,
+                    dry_a = EXCLUDED.dry_a,
+                    dry_b = EXCLUDED.dry_b,
+                    ts_min = EXCLUDED.ts_min,
+                    fit_ok = EXCLUDED.fit_ok,
+                    lst_min = EXCLUDED.lst_min,
+                    lst_max = EXCLUDED.lst_max,
+                    ndvi_min = EXCLUDED.ndvi_min,
+                    ndvi_max = EXCLUDED.ndvi_max,
+                    tvdi_min = EXCLUDED.tvdi_min,
+                    tvdi_max = EXCLUDED.tvdi_max,
+                    drought_area_pct = EXCLUDED.drought_area_pct,
+                    synced_at = CURRENT_TIMESTAMP;
+            """),
+            {
+                "date": dt,
+                "src": src,
+                "gran": gran,
+                "lst_c": reg_lst,
+                "ndvi": reg_ndvi,
+                "tvdi": reg_tvdi,
+                "n_img": n_img,
+                "dry_a": dry_a,
+                "dry_b": dry_b,
+                "ts_min": ts_min,
+                "fit_ok": fit_ok,
+                "lst_min": min(lst_vals) if lst_vals else None,
+                "lst_max": max(lst_vals) if lst_vals else None,
+                "ndvi_min": min(ndvi_vals) if ndvi_vals else None,
+                "ndvi_max": max(ndvi_vals) if ndvi_vals else None,
+                "tvdi_min": min(tvdi_vals) if tvdi_vals else None,
+                "tvdi_max": max(tvdi_vals) if tvdi_vals else None,
+                "drought_area_pct": drought_pct,
+            },
+        )
+
+        # Tổng hợp sang 167 phường/xã (tvdi.ward_observations)
+        ward_upserted = 0
+        wards_rows = tvdi_service.get_wards_rows(db)
+        if wards_rows and grid_rows_for_wards:
+            interp_list = tvdi_service.interpolate_wards_from_grid(wards_rows, grid_rows_for_wards)
+            ward_records = []
+            for w, vals in zip(wards_rows, interp_list):
+                dclass = tvdi_service.get_drought_class(vals["tvdi"])
+                ward_records.append({
+                    "date": dt,
+                    "ward_id": int(w[0]),
+                    "src": src,
+                    "gran": gran,
+                    "lst_c": vals["lst_c"],
+                    "ndvi": vals["ndvi"],
+                    "tvdi": vals["tvdi"],
+                    "drought_level": dclass["level"] if dclass["level"] > 0 else None,
+                    "method": "idw_centroid",
+                })
+            db.execute(
+                text("""
+                    INSERT INTO tvdi.ward_observations (
+                        date, ward_id, satellite_source, granularity,
+                        lst_c, ndvi, tvdi, drought_level, method, synced_at
+                    )
+                    VALUES (
+                        :date, :ward_id, :src, :gran,
+                        :lst_c, :ndvi, :tvdi, :drought_level, :method, CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (date, ward_id, satellite_source, granularity) DO UPDATE SET
+                        lst_c = EXCLUDED.lst_c,
+                        ndvi = EXCLUDED.ndvi,
+                        tvdi = EXCLUDED.tvdi,
+                        drought_level = EXCLUDED.drought_level,
+                        method = EXCLUDED.method,
+                        synced_at = CURRENT_TIMESTAMP;
+                """),
+                ward_records,
+            )
+            ward_upserted = len(ward_records)
+
+        db.execute(
+            text("""
+                UPDATE tvdi.gee_sync_logs
+                SET status = 'success',
+                    dates_synced = 1,
+                    grid_rows_upserted = :g_cnt,
+                    ward_rows_upserted = :w_cnt,
+                    message = :msg,
+                    finished_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+            """),
+            {
+                "id": log_id,
+                "g_cnt": len(grid_records),
+                "w_cnt": ward_upserted,
+                "msg": f"Đồng bộ thành công mốc {date_str} ({src}/{gran}): {len(grid_records)} ô lưới, {ward_upserted} phường/xã.",
+            },
+        )
+        db.commit()
+        return {
+            "status": "success",
+            "date": date_str,
+            "end_date": end_date_str,
+            "satellite_source": src,
+            "granularity": gran,
+            "n_img": n_img,
+            "grid_rows_upserted": len(grid_records),
+            "ward_rows_upserted": ward_upserted,
+            "regional_mean": {"lst_c": reg_lst, "ndvi": reg_ndvi, "tvdi": reg_tvdi},
+        }
+    except Exception as e:
+        db.rollback()
+        try:
+            db.execute(
+                text("""
+                    UPDATE tvdi.gee_sync_logs
+                    SET status = 'failed', message = :msg, finished_at = CURRENT_TIMESTAMP
+                    WHERE id = :id
+                """),
+                {"id": log_id, "msg": str(e)},
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise

@@ -89,10 +89,10 @@ async function renderScatterTriangle() {
     destroyAnalysisChart('scatter');
 
     const isForecast = state.currentView && state.currentView.kind === 'forecast';
-    const pts = isForecast ? [] : getGridTriples();
+    const pts = getGridTriples();
     if (pts.length === 0) {
         if (note) note.innerHTML = isForecast
-            ? '<i class="fa-solid fa-circle-info"></i> Mốc dự báo AI chỉ có chỉ số TVDI. Chọn chế độ <strong>Giám sát thực tế</strong> (2017–2025) để xem không gian LST – NDVI.'
+            ? '<i class="fa-solid fa-circle-info"></i> Mốc dự báo này chưa có đủ cặp giá trị LST – NDVI.'
             : '<i class="fa-solid fa-circle-info"></i> Không có ô lưới đủ dữ liệu LST & NDVI tại thời điểm này.';
         return;
     }
@@ -299,10 +299,9 @@ function renderTopWards() {
 function renderCorrelationMatrix() {
     const el = document.getElementById('corr-matrix');
     if (!el) return;
-    const isForecast = state.currentView && state.currentView.kind === 'forecast';
-    const pts = isForecast ? [] : getGridTriples();
+    const pts = getGridTriples();
     if (pts.length < 3) {
-        el.innerHTML = `<div class="analysis-empty">${isForecast ? 'Mốc dự báo AI chỉ có TVDI – không tính được tương quan giữa các chỉ số.' : 'Không đủ dữ liệu.'}</div>`;
+        el.innerHTML = '<div class="analysis-empty">Không đủ dữ liệu đủ cả 3 chỉ số LST, NDVI, TVDI.</div>';
         return;
     }
     const keys = ['lst', 'ndvi', 'tvdi'];

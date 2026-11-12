@@ -102,6 +102,7 @@ def list_wards(
     max_tvdi: Optional[float] = Query(None, description="Ngưỡng TVDI tối đa"),
     start: Optional[str] = Query(None, description="Ngày bắt đầu khi lấy giá trị trung bình theo khoảng (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="Ngày kết thúc khi lấy giá trị trung bình theo khoảng (YYYY-MM-DD)"),
+    horizon: Optional[str] = Query(None, description="Khung dự báo khi xem mốc dự báo: daily_7d | monthly_12m | 15day"),
     db: Session = Depends(get_db),
 ):
     """
@@ -132,6 +133,7 @@ def list_wards(
         max_tvdi=max_tvdi,
         start_str=start,
         end_str=end,
+        horizon=horizon,
     )
     return data
 

@@ -1,7 +1,7 @@
 {
   "model_name": "Random Forest Regressor",
   "library": "scikit-learn",
-  "trained_at": "2026-11-01 06:51:41",
+  "trained_at": "2026-11-12 13:12:28",
   "train_period": "2017-01-01 đến 2023-12-12 (168 kỳ quan trắc, 7 năm)",
   "test_period": "2024-01-01 đến 2025-12-12 (48 kỳ quan trắc, 2 năm)",
   "future_forecast_period": "2026-10-17 đến 2027-03-31 (Dự báo thời gian thực & mùa khô 2027)",
@@ -128,5 +128,96 @@
     "2027-12-05",
     "2027-12-20",
     "2027-12-31"
+  ],
+  "monthly_forecast_period": "2026-11 đến 2027-10 (12 tháng AI)",
+  "monthly_dates": [
+    "2026-11-01",
+    "2026-12-01",
+    "2027-01-01",
+    "2027-02-01",
+    "2027-03-01",
+    "2027-04-01",
+    "2027-05-01",
+    "2027-06-01",
+    "2027-07-01",
+    "2027-08-01",
+    "2027-09-01",
+    "2027-10-01"
+  ],
+  "monthly_metrics": {
+    "tvdi_grid": {
+      "r2_score": 0.0231,
+      "rmse": 0.1713,
+      "mae": 0.1326,
+      "test_samples": 6792
+    },
+    "tvdi_overall": {
+      "r2_score": -0.0502,
+      "rmse": 0.0466,
+      "mae": 0.0378,
+      "test_samples": 24
+    },
+    "lst_grid": {
+      "r2_score": 0.265,
+      "rmse": 4.1662,
+      "mae": 3.0754,
+      "test_samples": 6792
+    },
+    "ndvi_grid": {
+      "r2_score": 0.9376,
+      "rmse": 0.0498,
+      "mae": 0.0312,
+      "test_samples": 6792
+    }
+  },
+  "monthly_feature_importances": [
+    {
+      "feature": "c_smean",
+      "importance_percent": 54.23
+    },
+    {
+      "feature": "lag1",
+      "importance_percent": 8.76
+    },
+    {
+      "feature": "lag12",
+      "importance_percent": 7.78
+    },
+    {
+      "feature": "lag2",
+      "importance_percent": 5.59
+    },
+    {
+      "feature": "lag3",
+      "importance_percent": 4.86
+    },
+    {
+      "feature": "roll3",
+      "importance_percent": 3.75
+    },
+    {
+      "feature": "c_mean",
+      "importance_percent": 2.82
+    },
+    {
+      "feature": "lon",
+      "importance_percent": 2.8
+    },
+    {
+      "feature": "lat",
+      "importance_percent": 2.79
+    },
+    {
+      "feature": "cos_m",
+      "importance_percent": 2.59
+    },
+    {
+      "feature": "sin_m",
+      "importance_percent": 2.04
+    },
+    {
+      "feature": "month",
+      "importance_percent": 1.99
+    }
   ]
 }

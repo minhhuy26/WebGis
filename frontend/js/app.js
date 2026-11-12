@@ -8,13 +8,16 @@
 
 // --- 1. Trạng thái ứng dụng (State) ---
 const state = {
-    dates: [],                  // 216 mốc ngày thực tế + 4 mốc dự báo 2026
-    forecastDates: [],          // Mốc ngày dự báo tương lai
+    dates: [],                  // Toàn bộ mốc ngày hợp lệ
+    forecastDates: [],          // Mốc ngày dự báo tương lai (7 ngày + 12 tháng)
+    daily7Dates: [],            // Chuỗi 7 ngày dự báo (giả lập với Landsat)
+    monthly12Dates: [],         // Chuỗi 12 tháng dự báo (AI Random Forest)
+    forecastHorizon: 'daily_7d',// 'daily_7d' | 'monthly_12m'
     currentDate: '',            // Mốc ngày đang chọn (YYYY-MM-DD)
     currentDateIndex: 0,        // Vị trí mốc ngày hiện tại
     stepUnit: 'day',            // Đơn vị tăng/giảm mốc thời gian: 'day' (1 ngày) | 'cycle' (15 ngày)
-    activeRasterLayer: 'tvdi',  // 'tvdi' | 'ndvi' | 'lst'
-    isAIMode: true,             // Mặc định khởi động vào chế độ Dự báo AI Realtime
+    activeRasterLayer: 'tvdi',  // 'tvdi' | 'ndvi' | 'lst' (ưu tiên mặc định TVDI)
+    isAIMode: true,             // Mặc định khởi động vào chế độ Dự báo (7 ngày / 12 tháng)
     showAIPredictionLine: true, // Hiển thị đường AI trên biểu đồ
     aiMetrics: null,
     currentSeriesData: null,
@@ -69,7 +72,7 @@ const state = {
     playTimer: null,
     timeSeriesChart: null,
     chartTab: 'overall',
-    chartMode: '15days', // '15days' | 'history'
+    chartMode: '7days', // '7days' | '12months' | 'history' | 'compare'
     currentHistoricalSeries: null,
     currentGridData: null,
     boundaryGeoJson: null,
@@ -278,10 +281,15 @@ function readableTextColor(hex) {
     return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? '#0f172a' : '#ffffff';
 }
 
-// Mốc ngày thuộc chế độ Dự báo AI (tương lai hoặc từ năm 2026 trở đi – không có ảnh Landsat thực tế)
+// Mốc ngày thuộc chế độ Dự báo (7 ngày giả lập hoặc 12 tháng AI)
 function isForecastDate(dateStr) {
     if (!dateStr) return false;
-    return state.forecastDates.includes(dateStr) || dateStr >= '2026-01-01' || dateStr >= getTodayDateStr();
+    if (!state.isAIMode && state.observedDates.includes(dateStr)) return false;
+    return state.isAIMode
+        || state.daily7Dates.includes(dateStr)
+        || state.monthly12Dates.includes(dateStr)
+        || state.forecastDates.includes(dateStr)
+        || dateStr >= '2026-01-01';
 }
 
 // --- 2b. Bộ nội suy không gian IDW dùng chung (raster pixel, giá trị điểm nhấp chuột, cột 3D) ---
@@ -814,10 +822,17 @@ function lastDayOfMonth(year, month) {
     return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
-// Xác định bộ dữ liệu cần hiển thị cho mốc ngày: dự báo AI, kỳ quan trắc 15 ngày hoặc trung bình theo khoảng
+// Xác định bộ dữ liệu cần hiển thị cho mốc ngày: dự báo (7 ngày giả lập / 12 tháng AI), kỳ quan trắc 15 ngày hoặc trung bình theo khoảng
 function resolveDataView(dateStr) {
     if (isForecastDate(dateStr)) {
-        return { kind: 'forecast', date: dateStr, key: `forecast:${dateStr}` };
+        const horizon = state.forecastHorizon || (state.daily7Dates.includes(dateStr) ? 'daily_7d' : 'monthly_12m');
+        return {
+            kind: 'forecast',
+            horizon,
+            isSimulated: horizon === 'daily_7d',
+            date: dateStr,
+            key: `forecast:${horizon}:${dateStr}`,
+        };
     }
     const obs = state.observedDates || [];
     const agg = state.aggregation;
@@ -859,30 +874,36 @@ async function loadDataForCurrentDate() {
     if (state.currentGridData && state.currentDataKey === view.key) {
         state.currentView = view;
         updateMapTitle();
-        if (state.chartMode === '15days') loadChartData();
+        if (state.chartMode === '7days' || state.chartMode === '12months') loadChartData();
         return;
     }
 
     try {
         let url;
-        if (view.kind === 'forecast') url = `/api/prediction/grid/${dateStr}`;
+        if (view.kind === 'forecast') url = `/api/prediction/grid/${dateStr}?horizon=${view.horizon}`;
         else if (view.kind === 'aggregate') url = `/api/grid/aggregate?start=${view.start}&end=${view.end}`;
         else url = `/api/grid/${view.date}`;
 
         let res = await fetch(url);
         if (!res.ok && view.kind === 'cycle') {
-            // Nếu ngày không có trong Landsat thực tế thì gọi AI nội suy
+            // Nếu ngày không có trong Landsat thực tế thì gọi nội suy dự báo
             res = await fetch(`/api/prediction/grid/${dateStr}`);
             view.kind = 'forecast';
-            view.key = `forecast:${dateStr}`;
+            view.horizon = '15day';
+            view.key = `forecast:15day:${dateStr}`;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (seq !== state.loadSeq) return;   // Đã có yêu cầu mới hơn (đổi ngày liên tục / animation)
 
+        if (view.kind === 'forecast') {
+            view.horizon = data.horizon_type || view.horizon;
+            view.isSimulated = !!data.is_simulated;
+        }
         state.currentGridData = data;
         state.currentView = view;
         state.currentDataKey = view.key;
+        updateForecastSourcePill(view);
 
         // Render các lớp tương ứng
         renderActiveRaster(view.kind === 'forecast');
@@ -936,8 +957,8 @@ async function loadDataForCurrentDate() {
             }
         }
 
-        // Tự động đồng bộ biểu đồ dự báo 15 ngày theo mốc ngày mới đang chọn
-        if (state.chartMode === '15days') {
+        // Tự động đồng bộ biểu đồ dự báo theo mốc mới đang chọn
+        if (state.chartMode === '7days' || state.chartMode === '12months') {
             loadChartData();
         }
     } catch (err) {
@@ -945,26 +966,41 @@ async function loadDataForCurrentDate() {
     }
 }
 
-// Ràng buộc theo chế độ: mô hình AI chỉ dự báo TVDI và không tổng hợp theo khoảng thời gian
+function isAdminUser() {
+    return !!(state.auth && (state.auth.is_admin || state.auth.role === 'admin'));
+}
+
+function updateForecastSourcePill(view) {
+    const pill = document.getElementById('forecast-source-pill');
+    if (!pill) return;
+    if (!view || view.kind !== 'forecast') return;
+    const isSim = view.horizon === 'daily_7d' || !!view.isSimulated;
+    pill.classList.add('forecast-source-pill', 'admin-tech-only');
+    pill.classList.toggle('is-sim', isSim);
+    pill.classList.toggle('is-ai', !isSim);
+    pill.innerHTML = isSim
+        ? '<i class="fa-solid fa-flask"></i> Giả lập · Landsat'
+        : '<i class="fa-solid fa-brain"></i> AI Random Forest · Landsat';
+}
+
+// Ràng buộc theo chế độ: ở chế độ Dự báo mở khóa cả 3 lớp khi CSDL có dữ liệu, vẫn ưu tiên mặc định TVDI
 function applyModeConstraints(isFuture) {
     document.querySelectorAll('#index-switch .seg-btn, #index-cards .index-card').forEach(btn => {
         const key = btn.dataset.index;
-        const locked = isFuture && key !== 'tvdi';
-        btn.classList.toggle('is-locked', locked);
-        btn.disabled = locked;
+        btn.classList.remove('is-locked');
+        btn.disabled = false;
         if (btn.classList.contains('seg-btn')) {
-            btn.title = locked
-                ? 'Mô hình AI chỉ dự báo TVDI – chọn chế độ "Giám sát thực tế" (2017–2025) để xem LST / NDVI'
-                : `${INDEX_META[key].name} ${INDEX_META[key].label}${INDEX_META[key].unit ? ' (' + INDEX_META[key].unit + ')' : ''}`;
+            btn.title = `${INDEX_META[key].name} ${INDEX_META[key].label}${INDEX_META[key].unit ? ' (' + INDEX_META[key].unit + ')' : ''}`;
         }
     });
-    if (isFuture && state.activeRasterLayer !== 'tvdi') {
-        setActiveIndex('tvdi', { silent: true });
-        showToast('Mốc dự báo AI chỉ có chỉ số TVDI – bản đồ đã chuyển sang lớp TVDI.');
-    }
 
     const toolbar = document.querySelector('.toolbar');
     if (toolbar) toolbar.classList.toggle('is-forecast', !!isFuture);
+
+    const horizonSel = document.getElementById('forecast-horizon-select');
+    if (horizonSel && state.forecastHorizon) {
+        horizonSel.value = state.forecastHorizon;
+    }
 
     const aggSelect = document.getElementById('aggregation-select');
     if (aggSelect) {
@@ -1584,12 +1620,12 @@ function getDroughtUITheme(tvdi) {
             desc: 'Độ ẩm đất đầy đủ, thực vật phát triển tốt.',
             badgeBg: '#0ce100',
             badgeText: '#0f172a',
-            badgeBorder: '#0ab800',
+            badgeBorder: '#099a00',
             barColor: '#0ce100',
             bgColor: '#ecfdf5',
-            borderColor: '#0ce100',
+            borderColor: '#16a34a',
             titleColor: '#065f46',
-            scoreColor: '#0ab800',
+            scoreColor: '#15803d',
             icon: 'fa-seedling'
         };
     } else if (tvdi <= 0.500) {
@@ -1601,44 +1637,44 @@ function getDroughtUITheme(tvdi) {
             desc: 'Độ ẩm đất ở mức bình thường, thực vật ổn định.',
             badgeBg: '#00ff00',
             badgeText: '#0f172a',
-            badgeBorder: '#00cc00',
+            badgeBorder: '#15803d',
             barColor: '#00ff00',
             bgColor: '#f0fdf4',
-            borderColor: '#00cc00',
+            borderColor: '#16a34a',
             titleColor: '#14532d',
-            scoreColor: '#00aa00',
+            scoreColor: '#15803d',
             icon: 'fa-leaf'
         };
     } else if (tvdi <= 0.625) {
-        // CẤP 5: Bắt đầu khô hạn nhẹ – Vàng tươi #ffff00
+        // CẤP 5: Bắt đầu khô hạn nhẹ – Vàng #facc15 / #ffff00 (chữ tối dễ đọc)
         return {
             level: 5,
             levelCode: 'CẤP 5',
             label: 'Bắt đầu khô hạn nhẹ',
             desc: 'Đất bắt đầu thiếu nước nhẹ, thực vật chịu áp lực.',
-            badgeBg: '#ffff00',
+            badgeBg: '#facc15',
             badgeText: '#0f172a',
-            badgeBorder: '#eab308',
-            barColor: '#ffff00',
+            badgeBorder: '#a16207',
+            barColor: '#eab308',
             bgColor: '#fefce8',
-            borderColor: '#eab308',
+            borderColor: '#ca8a04',
             titleColor: '#854d0e',
-            scoreColor: '#ca8a04',
+            scoreColor: '#a16207',
             icon: 'fa-triangle-exclamation'
         };
     } else if (tvdi <= 0.750) {
-        // CẤP 6: Hạn vừa – Vàng cam #ffcc00
+        // CẤP 6: Hạn vừa – Vàng cam #ffcc00 (chữ tối dễ đọc)
         return {
             level: 6,
             levelCode: 'CẤP 6',
             label: 'Hạn vừa',
             desc: 'Đất thiếu nước rõ rệt, thực vật bắt đầu héo.',
-            badgeBg: '#ffcc00',
+            badgeBg: '#fbbf24',
             badgeText: '#0f172a',
-            badgeBorder: '#d4a000',
-            barColor: '#ffcc00',
+            badgeBorder: '#b45309',
+            barColor: '#f59e0b',
             bgColor: '#fffbeb',
-            borderColor: '#d4a000',
+            borderColor: '#d97706',
             titleColor: '#78350f',
             scoreColor: '#b45309',
             icon: 'fa-sun'
@@ -1687,21 +1723,20 @@ function renderPointDetail(lat, lon, tvdiVal, theme, locationName, values = null
 
     const tvdiPercent = tvdiVal !== null ? Math.max(0, Math.min(100, Math.round(tvdiVal * 100))) : 0;
 
-    // Giá trị LST & NDVI tại vị trí (nội suy cùng thuật toán với bản đồ); mốc dự báo AI chỉ có TVDI
-    const isForecastView = state.currentView && state.currentView.kind === 'forecast';
+    // Giá trị LST & NDVI tại vị trí (nội suy từ lưới hiện trạng hoặc dự báo trong CSDL)
     let lstVal = values ? values.lst : null;
     let ndviVal = values ? values.ndvi : null;
-    if (!values && !isForecastView) {
+    if (!values) {
         const iL = getInterpolatedValueAtLatLng(lat, lon, 'lst');
         const iN = getInterpolatedValueAtLatLng(lat, lon, 'ndvi');
         lstVal = iL ? iL.value : null;
         ndviVal = iN ? iN.value : null;
     }
     const chip = (key, val) => {
-        const ok = val !== null && val !== undefined && !isNaN(val) && !isForecastView;
+        const ok = val !== null && val !== undefined && !isNaN(val);
         const rgb = ok ? interpolateColor(key, val) : [226, 232, 240];
         return `
-            <div class="point-index-chip" title="${INDEX_META[key].name}${ok ? '' : ' – không có trong dự báo AI'}">
+            <div class="point-index-chip" title="${INDEX_META[key].name}${ok ? '' : ' – chưa có dữ liệu'}">
                 <span class="point-index-swatch" style="background: ${rgbCss(rgb)};"></span>
                 <span class="point-index-name">${INDEX_META[key].label}</span>
                 <strong>${ok ? formatIndexValue(val, key) : '—'}</strong>
@@ -1768,11 +1803,13 @@ function renderSelectedCell(props, clickInfo = null) {
     renderPointDetail(lat, lon, tvdiVal, theme, locationName);
 }
 
-// --- 10. Tải và Vẽ biểu đồ Chuỗi thời gian (Dự báo 15 ngày Realtime vs Lịch sử 2017–2025) ---
+// --- 10. Tải và Vẽ biểu đồ Chuỗi thời gian (Dự báo 7 ngày giả lập / 12 tháng AI / Lịch sử 2017–2025) ---
 async function loadChartData() {
     const isCell = (state.chartTab === 'cell');
     const cellId = state.selectedCellId;
-    const is15Days = (state.chartMode === '15days');
+    const is7Days = (state.chartMode === '7days');
+    const is12Months = (state.chartMode === '12months');
+    const isHorizonForecast = is7Days || is12Months;
     const isCompare = (state.chartMode === 'compare');
     const idxKey = state.activeRasterLayer;
 
@@ -1782,16 +1819,17 @@ async function loadChartData() {
     const trendWrapper = document.getElementById('stat-tvdi-trend-wrapper');
     const titleEl = document.getElementById('chart-card-title');
     if (titleEl) {
-        titleEl.innerText = is15Days
-            ? 'Dự báo TVDI 15 ngày (AI)'
-            : (isCompare ? 'TVDI thực tế vs dự báo AI' : `Chuỗi thời gian ${INDEX_META[idxKey].label}`);
+        if (is7Days) titleEl.innerText = `Dự báo ${INDEX_META[idxKey].label} 7 ngày (Giả lập)`;
+        else if (is12Months) titleEl.innerText = `Dự báo ${INDEX_META[idxKey].label} 12 tháng (AI)`;
+        else if (isCompare) titleEl.innerText = 'TVDI thực tế vs dự báo AI';
+        else titleEl.innerText = `Chuỗi thời gian ${INDEX_META[idxKey].label}`;
     }
 
     if (isCell && !cellId) {
         if (hint) {
             hint.style.display = 'block';
-            hint.innerHTML = is15Days
-                ? '<i class="fa-solid fa-hand-pointer"></i> Nhấp vào một điểm trên bản đồ hoặc chọn <strong>"Toàn vùng"</strong> để xem dự báo 15 ngày.'
+            hint.innerHTML = isHorizonForecast
+                ? `<i class="fa-solid fa-hand-pointer"></i> Nhấp vào một điểm trên bản đồ hoặc chọn <strong>"Toàn vùng"</strong> để xem dự báo ${is7Days ? '7 ngày' : '12 tháng'}.`
                 : `<i class="fa-solid fa-hand-pointer"></i> Nhấp vào một điểm trên bản đồ hoặc chọn <strong>"Toàn vùng"</strong> để xem chuỗi biến thiên ${isCompare ? 'TVDI' : INDEX_META[idxKey].label} 2017–2025.`;
         }
         if (quickStats) quickStats.style.display = 'none';
@@ -1807,16 +1845,17 @@ async function loadChartData() {
     if (quickStats) quickStats.style.display = 'grid';
     if (locBar) locBar.style.display = 'flex';
 
-    if (is15Days) {
+    if (isHorizonForecast) {
         if (trendWrapper) trendWrapper.style.display = 'flex';
         const target = isCell ? cellId : 'overall';
         try {
-            const startDate = state.currentDate || getTodayDateStr();
-            const res = await fetch(`/api/prediction/series/15days/${target}?start_date=${startDate}`);
+            const endpoint = is7Days ? '7days' : '12months';
+            const res = await fetch(`/api/prediction/series/${endpoint}/${target}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            render15DayChart(data);
+            renderForecastHorizonChart(data);
         } catch (err) {
-            console.error('Lỗi khi tải dự báo 15 ngày:', err);
+            console.error(`Lỗi khi tải dự báo ${is7Days ? '7 ngày' : '12 tháng'}:`, err);
         }
     } else if (isCompare) {
         // So sánh TVDI thực tế (Landsat) và dự báo của mô hình Random Forest
@@ -1872,10 +1911,15 @@ async function loadOverallTimeSeries() {
     await loadChartData();
 }
 
-function render15DayChart(data) {
+function renderForecastHorizonChart(data) {
     if (!data || !data.series || data.series.length === 0) return;
     const series = data.series;
     state.currentSeriesData = series;
+
+    const key = state.activeRasterLayer || 'tvdi';
+    const meta = INDEX_META[key];
+    const isMonthly = data.horizon_type === 'monthly_12m';
+    const isSim = !!data.is_simulated;
 
     // Cập nhật thanh tiêu đề & vị trí trực quan phía trên
     const locBar = document.getElementById('chart-location-bar');
@@ -1896,19 +1940,44 @@ function render15DayChart(data) {
             locNameEl.title = 'Toàn vùng TP. Hồ Chí Minh';
         }
     }
-    if (rangeTextEl) {
-        const startShort = data.start_date.substring(5).replace('-', '/');
-        const endShort = data.end_date.substring(5).replace('-', '/');
-        rangeTextEl.innerText = `15 ngày: ${startShort} → ${endShort}`;
+    if (rangeTextEl && data.start_date && data.end_date) {
+        if (isMonthly) {
+            const s = `${data.start_date.substring(5, 7)}/${data.start_date.substring(0, 4)}`;
+            const e = `${data.end_date.substring(5, 7)}/${data.end_date.substring(0, 4)}`;
+            rangeTextEl.innerText = `12 tháng (AI): ${s} → ${e}`;
+        } else {
+            const startShort = data.start_date.substring(5).replace('-', '/');
+            const endShort = data.end_date.substring(5).replace('-', '/');
+            rangeTextEl.innerText = `7 ngày (Giả lập): ${startShort} → ${endShort}`;
+        }
+    }
+
+    const vals = series.map(d => getIndexValue(d, key));
+    const validVals = vals.filter(v => v !== null && !isNaN(v));
+    const avgVal = validVals.length ? validVals.reduce((a, b) => a + b, 0) / validVals.length : null;
+    const maxVal = validVals.length ? Math.max(...validVals) : null;
+    const minVal = validVals.length ? Math.min(...validVals) : null;
+
+    let trendHtml = `<span style="color: ${data.trend_color}; font-weight: 700;"><i class="fa-solid ${data.trend_icon}"></i> ${data.trend_label}</span>`;
+    if (key !== 'tvdi' && validVals.length >= 2) {
+        const delta = validVals[validVals.length - 1] - validVals[0];
+        const eps = key === 'lst' ? 0.3 : 0.01;
+        if (delta > eps) {
+            trendHtml = `<span style="color:#ef4444;font-weight:700;"><i class="fa-solid fa-arrow-trend-up"></i> Tăng (+${delta.toFixed(key === 'lst' ? 1 : 3)})</span>`;
+        } else if (delta < -eps) {
+            trendHtml = `<span style="color:#10b981;font-weight:700;"><i class="fa-solid fa-arrow-trend-down"></i> Giảm (${delta.toFixed(key === 'lst' ? 1 : 3)})</span>`;
+        } else {
+            trendHtml = `<span style="color:#3b82f6;font-weight:700;"><i class="fa-solid fa-arrow-right"></i> Ổn định</span>`;
+        }
     }
 
     const trendWrapper = document.getElementById('stat-tvdi-trend-wrapper');
     if (trendWrapper) trendWrapper.style.display = 'flex';
     setStatPills([
-        { label: 'Trung bình', value: Number(data.avg_tvdi).toFixed(3) },
-        { label: 'Cao nhất', value: Number(data.max_tvdi).toFixed(3) },
-        { label: 'Thấp nhất', value: Number(data.min_tvdi).toFixed(3) },
-        { label: 'Xu hướng', value: `<span style="color: ${data.trend_color}; font-weight: 700;"><i class="fa-solid ${data.trend_icon}"></i> ${data.trend_label}</span>` },
+        { label: 'Trung bình', value: avgVal !== null ? formatIndexValue(avgVal, key, false) : '--' },
+        { label: 'Cao nhất', value: maxVal !== null ? formatIndexValue(maxVal, key, false) : '--' },
+        { label: 'Thấp nhất', value: minVal !== null ? formatIndexValue(minVal, key, false) : '--' },
+        { label: isSim ? 'Xu hướng (Giả lập)' : 'Xu hướng (AI)', value: trendHtml },
     ]);
 
     if (state.timeSeriesChart) {
@@ -1916,38 +1985,38 @@ function render15DayChart(data) {
     }
 
     const ctx = document.getElementById('timeSeriesChart').getContext('2d');
-
-    // Format labels gọn gàng dạng "24/10", "25/10"...
     const labels = series.map(d => {
         const parts = d.date.split('-');
-        return `${parts[2]}/${parts[1]}`;
+        return isMonthly ? `T${parts[1]}/${parts[0].slice(2)}` : `${parts[2]}/${parts[1]}`;
     });
-    const tvdiVals = series.map(d => d.tvdi_pred);
 
-    // Gradient màu tím indigo hiện đại uốn lượn dưới đường cong
+    const color = isSim ? '#0ea5e9' : (key === 'tvdi' ? '#4f46e5' : meta.color);
     const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-    gradient.addColorStop(0, 'rgba(99, 102, 241, 0.40)');
-    gradient.addColorStop(0.5, 'rgba(139, 92, 246, 0.15)');
+    gradient.addColorStop(0, isSim ? 'rgba(14, 165, 233, 0.32)' : 'rgba(99, 102, 241, 0.36)');
+    gradient.addColorStop(0.55, isSim ? 'rgba(14, 165, 233, 0.12)' : 'rgba(139, 92, 246, 0.14)');
     gradient.addColorStop(1, 'rgba(99, 102, 241, 0.01)');
+
+    const axis = getIndexAxisConfig(key, validVals);
 
     state.timeSeriesChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: labels,
             datasets: [{
-                label: 'Dự báo TVDI',
-                data: tvdiVals,
-                borderColor: '#4f46e5',
-                borderWidth: 2.6,
+                label: `Dự báo ${meta.label}`,
+                data: vals,
+                borderColor: color,
+                borderWidth: 2.5,
+                borderDash: isSim ? [5, 3] : [],
                 backgroundColor: gradient,
                 fill: true,
-                tension: 0.38,
-                pointRadius: 2.5,
-                pointBackgroundColor: '#4f46e5',
+                tension: 0.35,
+                pointRadius: isMonthly ? 3 : 3.2,
+                pointBackgroundColor: color,
                 pointBorderColor: '#ffffff',
                 pointBorderWidth: 1.5,
                 pointHoverRadius: 6,
-                pointHoverBackgroundColor: '#4f46e5',
+                pointHoverBackgroundColor: color,
                 pointHoverBorderColor: '#ffffff',
                 pointHoverBorderWidth: 2
             }]
@@ -1967,15 +2036,20 @@ function render15DayChart(data) {
                     callbacks: {
                         title: function (items) {
                             const d = series[items[0].dataIndex];
-                            return `⚡ Ngày ${d.day_index} (${d.date})`;
+                            const stepLabel = isMonthly ? `Tháng ${d.date.substring(5, 7)}/${d.date.substring(0, 4)}` : `Ngày +${d.step_index - 1} (${d.date})`;
+                            const srcBadge = isSim ? 'Giả lập · Landsat' : 'AI Random Forest';
+                            return `${stepLabel} · ${srcBadge}`;
                         },
                         label: function (context) {
                             const d = series[context.dataIndex];
-                            const theme = getDroughtUITheme(d.tvdi_pred);
-                            return [
-                                `  Dự báo TVDI: ${d.tvdi_pred.toFixed(3)}`,
-                                `  Cấp độ: ${theme.label}`
-                            ];
+                            const tv = getIndexValue(d, 'tvdi');
+                            const theme = getDroughtUITheme(tv);
+                            const lines = [`  ${meta.label}: ${formatIndexValue(getIndexValue(d, key), key)}`];
+                            if (key !== 'tvdi' && tv !== null) lines.push(`  TVDI: ${tv.toFixed(3)} (${theme.label})`);
+                            else lines.push(`  Cấp độ: ${theme.label}`);
+                            if (key !== 'lst' && d.lst_c !== null && d.lst_c !== undefined) lines.push(`  LST: ${Number(d.lst_c).toFixed(1)} °C`);
+                            if (key !== 'ndvi' && d.ndvi !== null && d.ndvi !== undefined) lines.push(`  NDVI: ${Number(d.ndvi).toFixed(3)}`);
+                            return lines;
                         }
                     }
                 }
@@ -1987,23 +2061,23 @@ function render15DayChart(data) {
                         color: '#64748b',
                         maxRotation: 0,
                         autoSkip: true,
-                        maxTicksLimit: 7
+                        maxTicksLimit: isMonthly ? 12 : 7
                     },
                     grid: { display: false }
                 },
                 y: {
                     type: 'linear',
-                    min: 0,
-                    max: 1.0,
+                    min: axis.min,
+                    max: axis.max,
                     ticks: {
-                        stepSize: 0.2,
+                        stepSize: axis.stepSize,
                         font: { size: 9 },
                         color: '#64748b',
-                        callback: (v) => v.toFixed(1)
+                        callback: axis.fmt
                     },
                     title: {
                         display: true,
-                        text: 'Chỉ số TVDI [0 – 1]',
+                        text: axis.title,
                         font: { size: 9, weight: 'bold' },
                         color: '#64748b'
                     },
@@ -2302,24 +2376,25 @@ function renderChart(seriesData, title) {
 }
 
 // --- 11. Thống kê cấp độ khô hạn toàn vùng (Tối ưu TVDI & Hỗ trợ Dự báo AI) ---
-// Thẻ giá trị trung bình toàn vùng của 3 chỉ số LST / NDVI / TVDI
+// Thẻ giá trị trung bình toàn vùng của 3 chỉ số LST / NDVI / TVDI (dữ liệu hiện trạng & dự báo đều đủ 3 chỉ số, ưu tiên TVDI)
 function updateIndexCards(gridData, isFuture) {
     const feats = (gridData && gridData.features) ? gridData.features : [];
+    const isSim = isFuture && state.forecastHorizon === 'daily_7d';
     ['lst', 'ndvi', 'tvdi'].forEach(key => {
         const vals = feats.map(f => getIndexValue(f.properties, key)).filter(v => v !== null);
         const valEl = document.getElementById(`card-val-${key}`);
         const subEl = document.getElementById(`card-sub-${key}`);
-        const noData = vals.length === 0 || (isFuture && key !== 'tvdi');
+        const noData = vals.length === 0;
         if (valEl) valEl.innerText = noData ? '--' : formatIndexValue(vals.reduce((a, b) => a + b, 0) / vals.length, key, false);
         if (subEl) {
-            subEl.innerText = (isFuture && key !== 'tvdi')
-                ? 'Không dự báo'
-                : (noData ? 'Không có dữ liệu' : (isFuture ? 'TB dự báo toàn vùng' : 'TB toàn vùng'));
+            if (noData) subEl.innerText = 'Không có dữ liệu';
+            else if (isSim) subEl.innerText = 'TB giả lập toàn vùng';
+            else if (isFuture) subEl.innerText = 'TB dự báo AI toàn vùng';
+            else subEl.innerText = 'TB toàn vùng';
         }
     });
-    // Mốc dự báo AI chỉ có TVDI: ẩn 2 thẻ LST / NDVI trống cho gọn
     const cards = document.getElementById('index-cards');
-    if (cards) cards.classList.toggle('is-forecast', !!isFuture);
+    if (cards) cards.classList.remove('is-forecast');
 
     const tag = document.getElementById('stats-period-tag');
     if (tag) tag.innerText = describeCurrentView(true);
@@ -2673,13 +2748,9 @@ function refreshIndexVisuals() {
     updateMapTitle();
 }
 
-// Chọn lớp chỉ số hiển thị: LST | NDVI | TVDI
+// Chọn lớp chỉ số hiển thị: LST | NDVI | TVDI (ưu tiên mặc định TVDI, hỗ trợ chuyển sang LST / NDVI ở cả hiện trạng & dự báo)
 function setActiveIndex(key, opts = {}) {
     if (!INDEX_META[key]) return;
-    if (key !== 'tvdi' && isForecastDate(state.currentDate)) {
-        showToast('Mô hình AI chỉ dự báo chỉ số TVDI. Chọn "Giám sát thực tế" (2017–2025) để xem LST / NDVI.');
-        return;
-    }
     const changed = state.activeRasterLayer !== key;
     state.activeRasterLayer = key;
     document.querySelectorAll('#index-switch .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.index === key));
@@ -2688,7 +2759,7 @@ function setActiveIndex(key, opts = {}) {
     if (!changed && !opts.force) return;
 
     refreshIndexVisuals();
-    if (state.chartMode === 'history') loadChartData();
+    if (state.chartMode === 'history' || state.chartMode === '7days' || state.chartMode === '12months') loadChartData();
 
     // Bảng xếp hạng phường/xã sắp xếp theo chỉ số đang xem (LST cao→thấp, NDVI thấp→cao, TVDI cao→thấp)
     const sortBtn = document.getElementById({ lst: 'btn-sort-lst', ndvi: 'btn-sort-ndvi', tvdi: 'btn-sort-tvdi' }[key]);
@@ -3049,6 +3120,7 @@ function setDate(targetDateStr) {
     }
 
     const year = targetDateStr.substring(0, 4);
+    const selectKey = state.isAIMode ? `forecast:${state.forecastHorizon}` : `obs:${year}`;
 
     // Đồng bộ slider nếu có
     const slider = document.getElementById('timeline-range');
@@ -3056,8 +3128,8 @@ function setDate(targetDateStr) {
         slider.value = dateToDayIndex(targetDateStr);
     }
 
-    // Danh sách kỳ trong ô chọn nhanh theo năm của mốc đang xem
-    if (state.dateSelectYear !== year) populateDatesForYear(year);
+    // Danh sách kỳ trong ô chọn nhanh theo chế độ (7 ngày / 12 tháng / năm quan trắc)
+    if (state.dateSelectYear !== selectKey) populateDatesForYear(year);
 
     // Đồng bộ dropdown Mốc kỳ
     const dateSelect = document.getElementById('date-select');
@@ -3082,11 +3154,19 @@ function setDate(targetDateStr) {
         toolbarDatePicker.value = targetDateStr;
     }
 
-    // Vô hiệu hóa nút tiến / lùi khi ở biên
+    // Vô hiệu hóa nút tiến / lùi khi ở biên của chuỗi hiện tại
+    const activeList = state.isAIMode
+        ? (state.forecastHorizon === 'daily_7d' ? state.daily7Dates : state.monthly12Dates)
+        : state.observedDates;
     const btnPrev = document.getElementById('btn-toolbar-prev') || document.getElementById('btn-timeline-prev');
     const btnNext = document.getElementById('btn-toolbar-next') || document.getElementById('btn-timeline-next');
-    if (btnPrev) btnPrev.disabled = (targetDateStr <= START_DATE_STR);
-    if (btnNext) btnNext.disabled = (targetDateStr >= END_DATE_STR);
+    if (activeList && activeList.length > 0) {
+        if (btnPrev) btnPrev.disabled = (targetDateStr <= activeList[0]);
+        if (btnNext) btnNext.disabled = (targetDateStr >= activeList[activeList.length - 1]);
+    } else {
+        if (btnPrev) btnPrev.disabled = (targetDateStr <= START_DATE_STR);
+        if (btnNext) btnNext.disabled = (targetDateStr >= END_DATE_STR);
+    }
 
     updateButtonTooltips();
     loadDataForCurrentDate();
@@ -3098,33 +3178,29 @@ function setTimelineIndex(index) {
     setDate(state.dates[index]);
 }
 
-// --- 15. Khởi tạo mốc thời gian và điều khiển Timeline (Hỗ trợ theo ngày & theo chu kỳ) ---
+// --- 15. Khởi tạo mốc thời gian và điều khiển Timeline (Quan trắc + Dự báo 7 ngày / 12 tháng) ---
 async function initTimeline() {
     try {
-        const [datesRes, forecastRes] = await Promise.all([
+        const [datesRes, dailyRes, monthlyRes] = await Promise.all([
             fetch('/api/dates'),
-            fetch('/api/prediction/dates').catch(() => ({ ok: false, json: async () => [] }))
+            fetch('/api/prediction/dates?horizon=daily_7d').catch(() => ({ ok: false, json: async () => [] })),
+            fetch('/api/prediction/dates?horizon=monthly_12m').catch(() => ({ ok: false, json: async () => [] })),
         ]);
 
         const dates = await datesRes.json();
         state.observedDates = [...dates].sort();
-        let forecastDates = [];
-        if (forecastRes.ok) {
-            try {
-                forecastDates = await forecastRes.json();
-            } catch (e) {
-                forecastDates = [];
-            }
-        }
+
+        let dailyDates = dailyRes.ok ? await dailyRes.json().catch(() => []) : [];
+        let monthlyDates = monthlyRes.ok ? await monthlyRes.json().catch(() => []) : [];
 
         const todayStr = getTodayDateStr();
-        if (!forecastDates.includes(todayStr) && todayStr <= END_DATE_STR) {
-            forecastDates.push(todayStr);
+        if (!Array.isArray(dailyDates) || dailyDates.length === 0) {
+            dailyDates = Array.from({ length: 7 }, (_, i) => addDays(todayStr, i)).filter(d => d <= END_DATE_STR);
         }
-
-        // Lọc nghiêm ngặt: chỉ nhận các mốc đến hết 31/12/2027, tuyệt đối không nhảy qua 2028
-        state.forecastDates = forecastDates.filter(d => d <= END_DATE_STR).sort();
-        state.dates = [...new Set([...dates, ...state.forecastDates])].filter(d => d <= END_DATE_STR).sort();
+        state.daily7Dates = dailyDates.filter(d => d <= END_DATE_STR).sort();
+        state.monthly12Dates = (Array.isArray(monthlyDates) ? monthlyDates : []).filter(d => d <= END_DATE_STR).sort();
+        state.forecastDates = [...new Set([...state.daily7Dates, ...state.monthly12Dates])].sort();
+        state.dates = [...new Set([...state.observedDates, ...state.forecastDates])].filter(d => d <= END_DATE_STR).sort();
 
         if (state.dates.length === 0) return;
 
@@ -3135,15 +3211,19 @@ async function initTimeline() {
             slider.max = dateToDayIndex(END_DATE_STR);
             slider.step = 1;
         }
-        // Kích hoạt chế độ AI Realtime khi vào ngày hiện tại
+
+        // Mặc định khởi động vào chế độ Dự báo 7 ngày (Giả lập · Landsat) tại Hôm nay
         state.isAIMode = true;
-        state.stepUnit = 'day'; // Mặc định bước nhảy là 1 ngày để tăng/giảm tự nhiên
+        state.forecastHorizon = 'daily_7d';
+        state.chartMode = '7days';
+        state.stepUnit = 'day';
 
-        const targetYear = todayStr.substring(0, 4);
-        populateDatesForYear(targetYear);
+        const hSel = document.getElementById('forecast-horizon-select');
+        if (hSel) hSel.value = 'daily_7d';
 
-        // Nạp ngày ban đầu là Hôm nay
-        setDate(todayStr);
+        const initDate = state.daily7Dates.includes(todayStr) ? todayStr : (state.daily7Dates[0] || todayStr);
+        populateDatesForYear(initDate.substring(0, 4), true);
+        setDate(initDate);
 
         // Event listeners (an toàn với kiểm tra null)
         const dateSelect = document.getElementById('date-select');
@@ -3157,42 +3237,56 @@ async function initTimeline() {
 
         if (toolbarDatePicker) {
             toolbarDatePicker.addEventListener('change', (e) => {
-                if (e.target.value) setDate(e.target.value);
+                if (!e.target.value) return;
+                const val = e.target.value;
+                if (val < '2026-01-01' && state.isAIMode) {
+                    state.isAIMode = false;
+                    setStepUnit('cycle');
+                }
+                setDate(val);
             });
         }
 
         if (slider) {
             slider.addEventListener('input', (e) => {
-                const chosenDate = dayIndexToDate(parseInt(e.target.value));
+                const chosenDate = dayIndexToDate(parseInt(e.target.value, 10));
                 setDate(chosenDate);
             });
         }
 
-        // Nút Giảm / Tăng mốc thời gian trên Toolbar (hỗ trợ nhấp chuột và nhấn giữ để tua)
+        // Nút Giảm / Tăng mốc thời gian trên Toolbar (bước theo chuỗi đang kích hoạt: 7 ngày / 12 tháng / kỳ quan trắc)
         const btnPrevDate = document.getElementById('btn-toolbar-prev') || document.getElementById('btn-timeline-prev');
         const btnNextDate = document.getElementById('btn-toolbar-next') || document.getElementById('btn-timeline-next');
 
-        // Tiến / lùi theo đúng chu kỳ 15 ngày (Landsat 15-day cycle)
+        const getStepList = () => {
+            if (state.isAIMode) {
+                return state.forecastHorizon === 'daily_7d' ? state.daily7Dates : state.monthly12Dates;
+            }
+            return state.observedDates;
+        };
+
         const stepPrev = () => {
-            if (!state.dates || state.dates.length === 0) return;
+            const list = getStepList();
+            if (!list || list.length === 0) return;
             const curr = state.currentDate || getTodayDateStr();
-            let idx = state.dates.indexOf(curr);
+            const idx = list.indexOf(curr);
             if (idx > 0) {
-                setDate(state.dates[idx - 1]);
-            } else if (idx === -1) {
-                const prev = [...state.dates].reverse().find(d => d < curr);
+                setDate(list[idx - 1]);
+            } else {
+                const prev = [...list].reverse().find(d => d < curr);
                 if (prev) setDate(prev);
             }
         };
 
         const stepNext = () => {
-            if (!state.dates || state.dates.length === 0) return;
+            const list = getStepList();
+            if (!list || list.length === 0) return;
             const curr = state.currentDate || getTodayDateStr();
-            let idx = state.dates.indexOf(curr);
-            if (idx !== -1 && idx < state.dates.length - 1) {
-                setDate(state.dates[idx + 1]);
+            const idx = list.indexOf(curr);
+            if (idx !== -1 && idx < list.length - 1) {
+                setDate(list[idx + 1]);
             } else if (idx === -1) {
-                const next = state.dates.find(d => d > curr);
+                const next = list.find(d => d > curr);
                 if (next) setDate(next);
             }
         };
@@ -3202,7 +3296,7 @@ async function initTimeline() {
 
         // Nút tắt tiện ích: Hôm nay trên Toolbar
         const btnToolbarToday = document.getElementById('btn-toolbar-today');
-        const goToday = () => setDate(getTodayDateStr());
+        const goToday = () => setForecastHorizon('daily_7d');
         if (btnToolbarToday) btnToolbarToday.addEventListener('click', goToday);
 
     } catch (err) {
@@ -3258,20 +3352,33 @@ function attachHoldRepeat(button, action) {
 
 // Nhãn ngắn của một mốc trong ô chọn kỳ (ngày đầy đủ đã hiện ở ô lịch bên cạnh)
 function cycleOptionLabel(d, cycleNo) {
+    if (state.isAIMode && state.forecastHorizon === 'monthly_12m') {
+        return `Tháng ${d.substring(5, 7)}/${d.substring(0, 4)} (AI)`;
+    }
     const diff = getDiffDaysFromToday(d);
-    if (diff === 0) return 'Hôm nay';
-    if (diff === 1) return 'Ngày mai';
-    const isFuture = state.forecastDates.includes(d) || d >= '2026-01-01';
-    if (isFuture) return diff > 0 ? `Dự báo +${diff} ngày` : `Dự báo · ${d.substring(8, 10)}/${d.substring(5, 7)}`;
+    if (diff === 0) return `Hôm nay (${d.substring(8, 10)}/${d.substring(5, 7)})`;
+    if (diff === 1) return `Ngày mai (${d.substring(8, 10)}/${d.substring(5, 7)})`;
+    const isFuture = isForecastDate(d);
+    if (isFuture) return diff > 0 ? `Dự báo +${diff} ngày (${d.substring(8, 10)}/${d.substring(5, 7)})` : `Dự báo · ${d.substring(8, 10)}/${d.substring(5, 7)}`;
     return cycleNo ? `Kỳ ${cycleNo} · ${d.substring(8, 10)}/${d.substring(5, 7)}` : `Ngày ${d.substring(8, 10)}/${d.substring(5, 7)}`;
 }
 
-function populateDatesForYear(year) {
+function populateDatesForYear(year, force = false) {
     const dateSelect = document.getElementById('date-select');
     if (!dateSelect) return;
-    state.dateSelectYear = year;
+    const selectKey = state.isAIMode ? `forecast:${state.forecastHorizon}` : `obs:${year}`;
+    if (!force && state.dateSelectYear === selectKey) return;
+    state.dateSelectYear = selectKey;
     dateSelect.innerHTML = '';
-    state.dates.filter(d => d.startsWith(year)).forEach((d, i) => {
+
+    let items = [];
+    if (state.isAIMode) {
+        items = state.forecastHorizon === 'daily_7d' ? state.daily7Dates : state.monthly12Dates;
+    } else {
+        items = (state.observedDates || []).filter(d => d.startsWith(year));
+    }
+
+    items.forEach((d, i) => {
         const opt = document.createElement('option');
         opt.value = d;
         opt.text = cycleOptionLabel(d, i + 1);
@@ -3288,29 +3395,29 @@ function updateTimelineUI(dateStr, isFuture = false) {
     const diff = getDiffDaysFromToday(dateStr);
     const isToday = (diff === 0);
     const isTomorrow = (diff === 1);
+    const isMonthly = isFuture && state.forecastHorizon === 'monthly_12m';
+    const isSim = isFuture && state.forecastHorizon === 'daily_7d';
 
     // Cập nhật trạng thái nút duy nhất [⚡ Hôm nay] trên thanh trượt
     if (btnCardToday) {
         if (isToday) {
             btnCardToday.classList.add('active');
-            btnCardToday.title = 'Đang ở Hôm nay (Thời gian thực) - Nhấp để làm mới';
+            btnCardToday.title = 'Đang ở Hôm nay - Nhấp để làm mới';
         } else {
             btnCardToday.classList.remove('active');
-            btnCardToday.title = 'Nhấp để quay về Hôm nay (Thời gian thực)';
+            btnCardToday.title = 'Nhấp để quay về Hôm nay';
         }
     }
 
-    // Đồng bộ nút chọn chế độ (Giám sát thực tế vs Dự báo AI)
+    // Đồng bộ nút chọn chế độ (Giám sát thực tế vs Dự báo) và class toolbar
     const btnModeMonitor = document.getElementById('btn-mode-monitor');
     const btnModeForecast = document.getElementById('btn-mode-forecast');
+    const toolbar = document.querySelector('.toolbar');
+    const inForecast = !!(isFuture || state.isAIMode);
+    if (toolbar) toolbar.classList.toggle('is-forecast', inForecast);
     if (btnModeMonitor && btnModeForecast) {
-        if (isFuture || diff >= 0 || dateStr >= '2026-01-01') {
-            btnModeForecast.classList.add('active');
-            btnModeMonitor.classList.remove('active');
-        } else {
-            btnModeMonitor.classList.add('active');
-            btnModeForecast.classList.remove('active');
-        }
+        btnModeForecast.classList.toggle('active', inForecast);
+        btnModeMonitor.classList.toggle('active', !inForecast);
     }
 
     if (toolbarDatePicker && toolbarDatePicker.value !== dateStr) {
@@ -3319,35 +3426,34 @@ function updateTimelineUI(dateStr, isFuture = false) {
 
     const btnToolbarToday = document.getElementById('btn-toolbar-today');
     if (btnToolbarToday) {
-        if (isToday) {
+        if (isToday && state.forecastHorizon === 'daily_7d') {
             btnToolbarToday.classList.add('active');
-            btnToolbarToday.title = 'Đang ở Hôm nay (Thời gian thực)';
+            btnToolbarToday.title = 'Đang ở Hôm nay';
         } else {
             btnToolbarToday.classList.remove('active');
-            btnToolbarToday.title = 'Nhấp để quay về Hôm nay (Thời gian thực)';
+            btnToolbarToday.title = 'Nhấp để quay về Dự báo hôm nay (7 ngày)';
         }
     }
 
+    const showTech = isAdminUser();
     let badgeHtml = '';
-    let statusText = '';
-    if (isToday) {
-        badgeHtml = '<span class="pill-rf pill-realtime"><i class="fa-solid fa-bolt"></i> Hôm nay</span>';
-        statusText = 'Thời gian thực (Realtime)';
-    } else if (isTomorrow) {
-        badgeHtml = '<span class="pill-rf pill-tomorrow"><i class="fa-solid fa-wand-magic-sparkles"></i> Ngày mai</span>';
-        statusText = 'Dự báo ngày mai (+1 ngày)';
-    } else if (diff > 1) {
-        badgeHtml = `<span class="pill-rf pill-forecast"><i class="fa-solid fa-wand-magic-sparkles"></i> +${diff} ngày</span>`;
-        statusText = `Dự báo AI (+${diff} ngày)`;
+    if (isMonthly) {
+        badgeHtml = showTech
+            ? `<span class="pill-rf pill-forecast"><i class="fa-solid fa-brain"></i> AI Tháng ${dateStr.substring(5, 7)}/${dateStr.substring(0, 4)}</span>`
+            : `<span class="pill-rf pill-forecast"><i class="fa-solid fa-calendar-days"></i> Tháng ${dateStr.substring(5, 7)}/${dateStr.substring(0, 4)}</span>`;
+    } else if (isSim) {
+        const tag = isToday ? 'Hôm nay' : (isTomorrow ? 'Ngày mai' : (diff > 0 ? `+${diff} ngày` : 'Dự báo'));
+        badgeHtml = showTech
+            ? `<span class="pill-rf pill-realtime"><i class="fa-solid fa-flask"></i> Giả lập · ${tag}</span>`
+            : `<span class="pill-rf pill-realtime"><i class="fa-solid fa-wand-magic-sparkles"></i> ${tag}</span>`;
     } else if (diff === -1) {
         badgeHtml = '<span class="pill-rf pill-yesterday"><i class="fa-solid fa-clock-rotate-left"></i> Hôm qua</span>';
-        statusText = 'Hôm qua (-1 ngày)';
-    } else if (dateStr >= '2026-01-01') {
-        badgeHtml = '<span class="pill-rf pill-forecast"><i class="fa-solid fa-wand-magic-sparkles"></i> Dự báo AI</span>';
-        statusText = 'Dự báo AI 2026';
+    } else if (isFuture) {
+        badgeHtml = '<span class="pill-rf pill-forecast"><i class="fa-solid fa-wand-magic-sparkles"></i> Dự báo</span>';
     } else {
-        badgeHtml = '<span class="pill-rf pill-landsat"><i class="fa-solid fa-satellite"></i> Landsat</span>';
-        statusText = 'Quan sát Landsat 8/9';
+        badgeHtml = showTech
+            ? '<span class="pill-rf pill-landsat"><i class="fa-solid fa-satellite"></i> Landsat</span>'
+            : '<span class="pill-rf pill-landsat"><i class="fa-solid fa-eye"></i> Quan trắc</span>';
     }
 
     if (sliderDateLabel) {
@@ -3364,7 +3470,7 @@ function updateTimelineUI(dateStr, isFuture = false) {
     }
 }
 
-// --- 16. Chuyển Tab & Chế độ Biểu đồ (Ô lưới / Toàn vùng & Dự báo 15 ngày / Lịch sử 2017–2025) ---
+// --- 16. Chuyển Tab & Chế độ Biểu đồ (7 ngày giả lập / 12 tháng AI / Lịch sử / So sánh) ---
 function setupChartTabs() {
     const tabCell = document.getElementById('tab-cell-chart');
     const tabOverall = document.getElementById('tab-overall-chart');
@@ -3389,9 +3495,9 @@ function setupChartTabs() {
 }
 
 function setupChartModes() {
-    // '15days': dự báo 15 ngày | 'history': lịch sử 2017–2025 theo chỉ số đang chọn | 'compare': thực tế vs AI
     const modes = [
-        { btn: document.getElementById('btn-mode-15days'), mode: '15days' },
+        { btn: document.getElementById('btn-mode-7days'), mode: '7days' },
+        { btn: document.getElementById('btn-mode-12months'), mode: '12months' },
         { btn: document.getElementById('btn-mode-history'), mode: 'history' },
         { btn: document.getElementById('btn-mode-compare'), mode: 'compare' },
     ].filter(m => m.btn);
@@ -3400,6 +3506,13 @@ function setupChartModes() {
         m.btn.addEventListener('click', () => {
             modes.forEach(o => o.btn.classList.toggle('active', o === m));
             state.chartMode = m.mode;
+            if ((m.mode === '7days' || m.mode === '12months') && state.isAIMode) {
+                const targetHorizon = m.mode === '7days' ? 'daily_7d' : 'monthly_12m';
+                if (state.forecastHorizon !== targetHorizon) {
+                    setForecastHorizon(targetHorizon);
+                    return;
+                }
+            }
             loadChartData();
         });
     });
@@ -3413,33 +3526,52 @@ async function initAIMetrics() {
         const data = await res.json();
         state.aiMetrics = data;
 
-        // Cập nhật thông số ở Card 4 Sidebar
         const r2El = document.getElementById('rf-r2-val');
         const rmseEl = document.getElementById('rf-rmse-val');
         const maeEl = document.getElementById('rf-mae-val');
 
-        const r2 = data.overall_metrics?.r2_score;
-        const rmse = data.overall_metrics?.rmse;
-        const mae = data.overall_metrics?.mae;
+        const ov = data.overall_metrics || data.monthly_metrics?.tvdi_overall || {};
+        const gr = data.grid_metrics || data.monthly_metrics?.tvdi_grid || {};
 
-        if (r2El && r2 !== undefined) r2El.innerText = r2.toFixed(3);
-        if (rmseEl && rmse !== undefined) rmseEl.innerText = rmse.toFixed(3);
-        if (maeEl && mae !== undefined) maeEl.innerText = mae.toFixed(3);
+        if (r2El && ov.r2_score !== undefined) r2El.innerText = ov.r2_score.toFixed(3);
+        if (rmseEl && ov.rmse !== undefined) rmseEl.innerText = ov.rmse.toFixed(3);
+        if (maeEl && ov.mae !== undefined) maeEl.innerText = ov.mae.toFixed(3);
+
+        const ovR2 = document.getElementById('ai-eval-overall-r2');
+        const ovRmse = document.getElementById('ai-eval-overall-rmse');
+        const ovMae = document.getElementById('ai-eval-overall-mae');
+        if (ovR2 && ov.r2_score !== undefined) ovR2.innerText = ov.r2_score.toFixed(3);
+        if (ovRmse && ov.rmse !== undefined) ovRmse.innerText = ov.rmse.toFixed(3);
+        if (ovMae && ov.mae !== undefined) ovMae.innerText = ov.mae.toFixed(3);
+
+        const grR2 = document.getElementById('ai-eval-grid-r2');
+        const grRmse = document.getElementById('ai-eval-grid-rmse');
+        const grMae = document.getElementById('ai-eval-grid-mae');
+        if (grR2 && gr.r2_score !== undefined) grR2.innerText = gr.r2_score.toFixed(3);
+        if (grRmse && gr.rmse !== undefined) grRmse.innerText = gr.rmse.toFixed(3);
+        if (grMae && gr.mae !== undefined) grMae.innerText = gr.mae.toFixed(3);
 
         // Bản đồ giải nghĩa tên các biến đặc trưng đầu vào
         const featDescMap = {
-            'lag1': 'Giá trị kỳ trước liền kề (15 ngày)',
+            'lag1': 'Giá trị kỳ / tháng trước liền kề',
             'cell_mean': 'TVDI trung bình nhiều năm của ô',
+            'cell_seasonal_mean': 'Trung bình theo mùa của ô lưới',
+            'c_smean': 'Trung bình theo mùa của ô lưới',
+            'c_mean': 'Trung bình nhiều năm của ô lưới',
             'diff_lag': 'Biến thiên kỳ trước (lag1 - lag2)',
-            'lag3': 'Giá trị 3 kỳ trước (45 ngày)',
+            'lag3': 'Giá trị 3 bước trước',
             'lag24': 'Cùng kỳ năm ngoái (1 năm trước)',
+            'lag12': 'Cùng tháng năm ngoái (12 tháng trước)',
             'month': 'Tháng quan sát trong năm (chu kỳ mùa)',
             'cos_period': 'Thành phần chu kỳ Cosine theo năm',
             'sin_period': 'Thành phần chu kỳ Sine theo năm',
+            'cos_m': 'Thành phần chu kỳ Cosine theo tháng',
+            'sin_m': 'Thành phần chu kỳ Sine theo tháng',
             'lat': 'Vĩ độ không gian (Bắc - Nam)',
             'lon': 'Kinh độ không gian (Đông - Tây)',
-            'rolling_mean3': 'Trung bình trượt 3 kỳ gần nhất',
-            'lag2': 'Giá trị 2 kỳ trước (30 ngày)'
+            'rolling_mean3': 'Trung bình trượt 3 bước gần nhất',
+            'roll3': 'Trung bình trượt 3 tháng gần nhất',
+            'lag2': 'Giá trị 2 bước trước'
         };
 
         // Cập nhật Feature Importance trong AI Modal
@@ -3470,10 +3602,57 @@ async function initAIMetrics() {
     }
 }
 
+function setForecastHorizon(horizon, opts = {}) {
+    if (horizon !== 'daily_7d' && horizon !== 'monthly_12m') return;
+    const prev = state.forecastHorizon;
+    state.forecastHorizon = horizon;
+    state.isAIMode = true;
+
+    const hSel = document.getElementById('forecast-horizon-select');
+    if (hSel && hSel.value !== horizon) hSel.value = horizon;
+
+    const targetChartMode = (horizon === 'daily_7d') ? '7days' : '12months';
+    state.chartMode = targetChartMode;
+    const modeMap = {
+        '7days': document.getElementById('btn-mode-7days'),
+        '12months': document.getElementById('btn-mode-12months'),
+        'history': document.getElementById('btn-mode-history'),
+        'compare': document.getElementById('btn-mode-compare'),
+    };
+    Object.entries(modeMap).forEach(([m, btn]) => {
+        if (btn) btn.classList.toggle('active', m === targetChartMode);
+    });
+
+    const list = horizon === 'daily_7d' ? state.daily7Dates : state.monthly12Dates;
+    const todayStr = getTodayDateStr();
+    let targetDate = state.currentDate;
+    if (!targetDate || !list.includes(targetDate) || prev !== horizon) {
+        if (horizon === 'daily_7d') {
+            targetDate = list.includes(todayStr) ? todayStr : (list[0] || todayStr);
+        } else {
+            const curMonth = todayStr.substring(0, 7) + '-01';
+            targetDate = list.includes(curMonth) ? curMonth : (list[0] || curMonth);
+        }
+    }
+
+    populateDatesForYear(targetDate.substring(0, 4), true);
+    if (!opts.skipLoad) {
+        setDate(targetDate);
+        loadChartData();
+    }
+}
+
 function setupAIControls() {
-    // 1. Chuyển chế độ: Giám sát thực tế (2017–2025) vs Dự báo AI (Realtime & Tương lai)
+    // 1. Chuyển chế độ: Giám sát thực tế (2017–2025) vs Dự báo (7 ngày giả lập / 12 tháng AI)
     const btnMonitor = document.getElementById('btn-mode-monitor');
     const btnForecast = document.getElementById('btn-mode-forecast');
+    const horizonSelect = document.getElementById('forecast-horizon-select');
+
+    if (horizonSelect) {
+        horizonSelect.addEventListener('change', (e) => {
+            setForecastHorizon(e.target.value);
+        });
+    }
 
     if (btnForecast) {
         btnForecast.addEventListener('click', () => {
@@ -3481,7 +3660,8 @@ function setupAIControls() {
             btnForecast.classList.add('active');
             if (btnMonitor) btnMonitor.classList.remove('active');
             setStepUnit('day');
-            setDate(getTodayDateStr());
+            const horizon = (horizonSelect && horizonSelect.value) ? horizonSelect.value : state.forecastHorizon;
+            setForecastHorizon(horizon || 'daily_7d');
         });
     }
 
@@ -3492,13 +3672,26 @@ function setupAIControls() {
             if (btnForecast) btnForecast.classList.remove('active');
             setStepUnit('cycle');
 
-            // Nếu đang đứng ở mốc dự báo (>= 2026), chuyển về mốc quan sát thực tế gần nhất
-            const currDate = state.currentDate || state.dates[state.currentDateIndex];
-            if (state.forecastDates.includes(currDate) || currDate >= '2026-01-01') {
-                const idx2025 = state.dates.findIndex(d => d.startsWith('2025-03'));
-                if (idx2025 !== -1) setDate(state.dates[idx2025]);
-                else setDate(state.dates[0]);
+            // Chuyển biểu đồ về lịch sử 2017–2025 khi sang chế độ Giám sát thực tế
+            if (state.chartMode === '7days' || state.chartMode === '12months') {
+                state.chartMode = 'history';
+                ['7days', '12months', 'history', 'compare'].forEach(m => {
+                    const btn = document.getElementById(`btn-mode-${m}`);
+                    if (btn) btn.classList.toggle('active', m === 'history');
+                });
             }
+
+            // Chọn mốc quan sát thực tế gần nhất (mặc định 2025-03 hoặc mốc cuối trong observedDates)
+            const currDate = state.currentDate || state.dates[state.currentDateIndex];
+            let targetObs = currDate;
+            if (!state.observedDates.includes(currDate)) {
+                targetObs = state.observedDates.find(d => d.startsWith('2025-03'))
+                    || state.observedDates[state.observedDates.length - 1]
+                    || state.dates[0];
+            }
+            populateDatesForYear(targetObs.substring(0, 4), true);
+            setDate(targetObs);
+            loadChartData();
         });
     }
 
@@ -3620,13 +3813,13 @@ function exportToCSV() {
         const lon = (p.lon !== undefined && p.lon !== null) ? Number(p.lon).toFixed(5) : '';
         const lat = (p.lat !== undefined && p.lat !== null) ? Number(p.lat).toFixed(5) : '';
 
-        const rawTvdi = (p.tvdi !== undefined && p.tvdi !== null && !isNaN(p.tvdi))
-            ? p.tvdi
-            : ((p.tvdi_pred !== undefined && p.tvdi_pred !== null && !isNaN(p.tvdi_pred)) ? p.tvdi_pred : null);
+        const rawTvdi = getIndexValue(p, 'tvdi');
+        const rawLst = getIndexValue(p, 'lst');
+        const rawNdvi = getIndexValue(p, 'ndvi');
 
         const tvdiStr = rawTvdi !== null ? Number(rawTvdi).toFixed(4) : '';
-        const lstStr = (p.lst_c !== undefined && p.lst_c !== null && !isNaN(p.lst_c)) ? Number(p.lst_c).toFixed(2) : '';
-        const ndviStr = (p.ndvi !== undefined && p.ndvi !== null && !isNaN(p.ndvi)) ? Number(p.ndvi).toFixed(3) : '';
+        const lstStr = rawLst !== null ? Number(rawLst).toFixed(2) : '';
+        const ndviStr = rawNdvi !== null ? Number(rawNdvi).toFixed(3) : '';
 
         const theme = getDroughtUITheme(rawTvdi);
         const levelCode = theme.levelCode;
@@ -3659,423 +3852,7 @@ function exportToCSV() {
     URL.revokeObjectURL(url);
 }
 
-function generateReportPaper() {
-    const reportPaper = document.getElementById('report-paper');
-    if (!reportPaper) return;
-
-    const dateStr = state.currentDate || (state.dates && state.dates[state.currentDateIndex]) || getTodayDateStr();
-    const todayStr = getTodayDateStr();
-    const isFuture = state.forecastDates.includes(dateStr) || dateStr >= '2026-01-01' || dateStr >= todayStr;
-
-    // Ngày tháng tiếng Việt trang trọng
-    const now = new Date();
-    const repDay = String(now.getDate()).padStart(2, '0');
-    const repMonth = String(now.getMonth() + 1).padStart(2, '0');
-    const repYear = now.getFullYear();
-
-    const modeTitle = isFuture ? 'Dự báo chuỗi thời gian AI (Mô hình Random Forest)' : 'Dữ liệu vệ tinh viễn thám thực tế Landsat 8/9';
-
-    // 8 cấp độ khô hạn
-    const classDefs = [
-        { level: 1, label: 'Rất ẩm / Ngập nước', range: '≤ 0.125', color: '#066b00', risk: 'Nguy cơ ngập úng cao, thực bì bão hòa' },
-        { level: 2, label: 'Ẩm ướt', range: '0.125 – 0.250', color: '#0bc400', risk: 'An toàn, sinh trưởng lý tưởng' },
-        { level: 3, label: 'Đủ ẩm, phát triển tốt', range: '0.250 – 0.375', color: '#0ce100', risk: 'Bình thường, điều kiện tốt' },
-        { level: 4, label: 'Bình thường', range: '0.375 – 0.500', color: '#00ff00', risk: 'Ổn định, duy trì quan trắc định kỳ' },
-        { level: 5, label: 'Bắt đầu khô hạn nhẹ', range: '0.500 – 0.625', color: '#ffff00', risk: 'Cảnh báo cấp 1: Chớm thiếu ẩm' },
-        { level: 6, label: 'Hạn vừa', range: '0.625 – 0.750', color: '#ffcc00', risk: 'Cảnh báo cấp 2: Hạn hán vừa, thực bì héo nhẹ' },
-        { level: 7, label: 'Hạn nặng', range: '0.750 – 0.875', color: '#ff6600', risk: 'Báo động cấp 3: Nguy cơ cháy rừng cao' },
-        { level: 8, label: 'Hạn gay gắt / Khô khốc', range: '> 0.875', color: '#ff0000', risk: 'Báo động khẩn cấp: Đất kiệt nước nghiêm trọng' }
-    ];
-
-    const counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0 };
-    let validCells = 0;
-    let sumTvdi = 0;
-    let maxTvdi = -Infinity;
-    let minTvdi = Infinity;
-    let maxCell = null;
-    let minCell = null;
-    let droughtCellCount = 0;
-
-    let sumLst = 0, validLstCount = 0;
-    let sumNdvi = 0, validNdviCount = 0;
-
-    if (state.currentGridData && state.currentGridData.features && state.currentGridData.features.length > 0) {
-        state.currentGridData.features.forEach(f => {
-            const p = f.properties || {};
-            const val = (p.tvdi !== null && p.tvdi !== undefined && !isNaN(p.tvdi))
-                ? p.tvdi
-                : ((p.tvdi_pred !== null && p.tvdi_pred !== undefined && !isNaN(p.tvdi_pred)) ? p.tvdi_pred : null);
-
-            if (val !== null) {
-                validCells++;
-                sumTvdi += val;
-                if (val > maxTvdi) {
-                    maxTvdi = val;
-                    maxCell = p;
-                }
-                if (val < minTvdi) {
-                    minTvdi = val;
-                    minCell = p;
-                }
-                const theme = getDroughtUITheme(val);
-                if (counts[theme.level] !== undefined) counts[theme.level]++;
-                if (val >= 0.625) droughtCellCount++;
-            }
-
-            if (p.lst_c !== undefined && p.lst_c !== null && !isNaN(p.lst_c)) {
-                sumLst += Number(p.lst_c);
-                validLstCount++;
-            }
-            if (p.ndvi !== undefined && p.ndvi !== null && !isNaN(p.ndvi)) {
-                sumNdvi += Number(p.ndvi);
-                validNdviCount++;
-            }
-        });
-    }
-
-    const totalActive = validCells || 272;
-    const avgTvdi = validCells > 0 ? (sumTvdi / validCells).toFixed(3) : '--';
-    const maxTvdiStr = maxTvdi !== -Infinity ? maxTvdi.toFixed(3) : '--';
-    const minTvdiStr = minTvdi !== Infinity ? minTvdi.toFixed(3) : '--';
-    const droughtPct = validCells > 0 ? ((droughtCellCount / validCells) * 100).toFixed(1) : '0.0';
-    const avgLstStr = validLstCount > 0 ? (sumLst / validLstCount).toFixed(1) + ' °C' : 'Chưa có dữ liệu';
-    const avgNdviStr = validNdviCount > 0 ? (sumNdvi / validNdviCount).toFixed(3) : 'Chưa có dữ liệu';
-
-    // Đánh giá tổng thể
-    let overallEval = 'Bình thường';
-    if (avgTvdi !== '--') {
-        const avgNum = parseFloat(avgTvdi);
-        overallEval = getDroughtUITheme(avgNum).label;
-    }
-
-    // Khuyến nghị tự động hóa thông minh
-    let recomHtml = '';
-    const droughtNum = parseFloat(droughtPct) || 0;
-    if (droughtNum >= 30) {
-        recomHtml = `
-            <div class="rep-recom-box" style="border-left-color: #dc2626; background: #fef2f2; color: #991b1b;">
-                <div style="font-weight: 700; margin-bottom: 6px;"><i class="fa-solid fa-triangle-exclamation"></i> MỨC ĐỘ NGUY CƠ: BÁO ĐỘNG HẠN HÁN DIỆN RỘNG (CẤP ĐỘ III - KHẨN CẤP)</div>
-                <p style="margin: 0 0 6px 0;">1. <strong>Tài nguyên nước & Nông nghiệp:</strong> Diện tích khô hạn nghiêm trọng chiếm <strong>${droughtPct}%</strong> tổng địa bàn TP.HCM (${droughtCellCount} ô lưới). Khẩn trương kích hoạt phương án tưới tiết kiệm, ưu tiên cấp nước cho vùng chuyên canh lúa, rau hoa màu tại Củ Chi, Hóc Môn, Bình Chánh.</p>
-                <p style="margin: 0 0 6px 0;">2. <strong>Phòng chống cháy rừng (PCCC):</strong> Nâng cấp báo động cháy rừng tại Ban Quản lý Rừng phòng hộ Cần Giờ lên <strong>Cấp IV – Cấp V (Cực kỳ nguy hiểm)</strong>. Nghiêm cấm mọi hành vi sử dụng lửa trong và ven rừng, duy trì tuần tra tháp canh 24/24.</p>
-                <p style="margin: 0;">3. <strong>Môi trường & Cấp nước sinh hoạt:</strong> Theo dõi chặt chẽ ranh mặn 4‰ trên sông Sài Gòn và Đồng Nai nhằm điều tiết lịch lấy nước cho các nhà máy nước mặt TP.HCM.</p>
-            </div>
-        `;
-    } else if (droughtNum >= 10) {
-        recomHtml = `
-            <div class="rep-recom-box" style="border-left-color: #f59e0b; background: #fffbeb; color: #92400e;">
-                <div style="font-weight: 700; margin-bottom: 6px;"><i class="fa-solid fa-triangle-exclamation"></i> MỨC ĐỘ NGUY CƠ: CẢNH BÁO KHÔ HẠN CỤC BỘ (CẤP ĐỘ II - TRUNG BÌNH)</div>
-                <p style="margin: 0 0 6px 0;">1. <strong>Tài nguyên nước:</strong> Có <strong>${droughtPct}%</strong> diện tích đạt ngưỡng khô hạn (TVDI ≥ 0.625). Đề nghị các trạm thủy nông cơ sở đo đạc độ ẩm tầng đất mặt và kiểm tra hệ thống cống ngăn triều kết hợp giữ ngọt.</p>
-                <p style="margin: 0 0 6px 0;">2. <strong>Cảnh báo PCCC rừng:</strong> Duy trì mức cảnh báo cháy rừng ở <strong>Cấp III (Mức độ cao)</strong> tại các dải rừng tràm, đước có lớp thảm mục khô dày.</p>
-                <p style="margin: 0;">3. <strong>Dự báo định kỳ:</strong> Tiếp tục đối soát chu kỳ dự báo 15 ngày tiếp theo từ mô hình AI để chuẩn bị phương án điều tiết nước hồ Dầu Tiếng.</p>
-            </div>
-        `;
-    } else {
-        recomHtml = `
-            <div class="rep-recom-box" style="border-left-color: #16a34a; background: #f0fdf4; color: #166534;">
-                <div style="font-weight: 700; margin-bottom: 6px;"><i class="fa-solid fa-circle-check"></i> MỨC ĐỘ NGUY CƠ: AN TOÀN – ĐỦ ẨM (CẤP ĐỘ I - BÌNH THƯỜNG)</div>
-                <p style="margin: 0 0 6px 0;">1. <strong>Hiện trạng:</strong> Độ ẩm đất và thực vật trên toàn địa bàn TP. Hồ Chí Minh duy trì mức độ ổn định (TVDI trung bình = <strong>${avgTvdi}</strong>, tỷ lệ khô hạn chỉ <strong>${droughtPct}%</strong>).</p>
-                <p style="margin: 0 0 6px 0;">2. <strong>Giám sát:</strong> Tiếp tục thu thập chuỗi dữ liệu ảnh viễn thám Landsat 8/9 và cập nhật kết quả dự báo AI chu kỳ 15 ngày định kỳ.</p>
-                <p style="margin: 0;">3. <strong>Vận hành hồ đập:</strong> Duy trì quy trình tích trữ và xả nước thông thường của mùa khô.</p>
-            </div>
-        `;
-    }
-
-    // Bảng chuỗi thời gian gần nhất
-    let seriesSectionHtml = '';
-    if (state.currentSeriesData && state.currentSeriesData.length > 0) {
-        const recentSeries = state.currentSeriesData.slice(-6);
-        const seriesRows = recentSeries.map(s => {
-            const sVal = s.tvdi_pred !== undefined ? s.tvdi_pred : (s.tvdi_actual !== undefined ? s.tvdi_actual : s.tvdi);
-            const sTheme = getDroughtUITheme(sVal);
-            const valFormatted = (sVal !== null && sVal !== undefined) ? Number(sVal).toFixed(3) : '--';
-            return `
-                <tr>
-                    <td class="center"><strong>${s.date}</strong></td>
-                    <td class="center">${s.is_future || s.tvdi_pred !== undefined ? 'AI Dự báo' : 'Vệ tinh Landsat'}</td>
-                    <td class="center" style="font-weight: 700; color: ${sTheme.scoreColor};">${valFormatted}</td>
-                    <td class="center"><span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ${sTheme.barColor}; margin-right: 5px;"></span>${sTheme.levelCode}</td>
-                    <td>${sTheme.label}</td>
-                </tr>
-            `;
-        }).join('');
-
-        seriesSectionHtml = `
-            <div class="rep-section">
-                <div class="rep-sec-title">IV. Diễn biến chuỗi thời gian & Xu hướng dự báo gần nhất</div>
-                <table class="rep-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 18%;">Mốc quan sát</th>
-                            <th style="width: 22%;">Phương thức đo đạc</th>
-                            <th style="width: 18%;">Chỉ số TVDI</th>
-                            <th style="width: 16%;">Phân cấp</th>
-                            <th>Diễn giải trạng thái</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${seriesRows}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-
-    reportPaper.innerHTML = `
-        <!-- Quốc hiệu & Tiêu ngữ -->
-        <div class="rep-top-header">
-            <div class="rep-unit">
-                ỦY BAN NHÂN DÂN THÀNH PHỐ HỒ CHÍ MINH<br>
-                <strong>SỞ TÀI NGUYÊN VÀ MÔI TRƯỜNG</strong><br>
-                TRUNG TÂM VIỄN THÁM & HỆ THỐNG THÔNG TIN ĐỊA LÝ
-            </div>
-            <div class="rep-motto">
-                <strong>CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</strong><br>
-                <strong>Độc lập – Tự do – Hạnh phúc</strong><br>
-                <em>TP. Hồ Chí Minh, ngày ${repDay} tháng ${repMonth} năm ${repYear}</em>
-            </div>
-        </div>
-
-        <!-- Tiêu đề báo cáo -->
-        <div class="rep-title-group">
-            <h2>BÁO CÁO GIÁM SÁT & DỰ BÁO CHỈ SỐ KHÔ HẠN TVDI</h2>
-            <div style="font-size: 0.95rem; font-weight: 700; color: #1e3a8a; margin-top: 4px;">
-                ĐỊA BÀN: THÀNH PHỐ HỒ CHÍ MINH
-            </div>
-            <div class="rep-title-date">
-                (Kỳ quan sát: <strong>${dateStr}</strong> | Nguồn dữ liệu: <strong>${modeTitle}</strong>)
-            </div>
-        </div>
-
-        <!-- Phần I: Thông tin chung -->
-        <div class="rep-section">
-            <div class="rep-sec-title">I. Thông tin chung & Căn cứ kỹ thuật</div>
-            <div class="rep-grid-info">
-                <div class="rep-info-item">
-                    <strong>Khu vực nghiên cứu:</strong> Toàn bộ ranh giới hành chính TP. Hồ Chí Minh
-                </div>
-                <div class="rep-info-item">
-                    <strong>Hệ tọa độ & Chiếu:</strong> WGS 84 / UTM Zone 48N (EPSG: 4326/32648)
-                </div>
-                <div class="rep-info-item">
-                    <strong>Độ phân giải không gian:</strong> Lưới ô vuông đồng đều kích thước 5.0 km × 5.0 km
-                </div>
-                <div class="rep-info-item">
-                    <strong>Tổng số ô lưới phân tích:</strong> 289 ô (${totalActive} ô đất liền hoạt động)
-                </div>
-                <div class="rep-info-item">
-                    <strong>Nguồn dữ liệu đầu vào:</strong> Vệ tinh Landsat 8/9 OLI/TIRS (Kênh B4, B5, B10)
-                </div>
-                <div class="rep-info-item">
-                    <strong>Mô hình toán & AI:</strong> Không gian nhiệt độ – thực vật (Ts/NDVI) & Machine Learning Random Forest
-                </div>
-            </div>
-        </div>
-
-        <!-- Phần II: Các chỉ số thống kê khô hạn trọng yếu -->
-        <div class="rep-section">
-            <div class="rep-sec-title">II. Tổng hợp các chỉ số khô hạn toàn vùng (Kỳ ${dateStr})</div>
-            <table class="rep-table">
-                <thead>
-                    <tr>
-                        <th style="width: 32%;">Tên chỉ số</th>
-                        <th style="width: 22%;">Giá trị thống kê</th>
-                        <th style="width: 18%;">Đơn vị tính</th>
-                        <th>Đánh giá kỹ thuật</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td><strong>TVDI Trung bình toàn vùng (Average)</strong></td>
-                        <td class="center" style="font-size: 1rem; font-weight: 800; color: #2563eb;">${avgTvdi}</td>
-                        <td class="center">[ 0.0 – 1.0 ]</td>
-                        <td>Đánh giá tổng thể: <strong>${overallEval}</strong></td>
-                    </tr>
-                    <tr>
-                        <td><strong>TVDI Cực đại (Điểm khô hạn nhất)</strong></td>
-                        <td class="center" style="font-weight: 700; color: #dc2626;">${maxTvdiStr}</td>
-                        <td class="center">[ 0.0 – 1.0 ]</td>
-                        <td>${maxCell ? `Ô lưới ID ${maxCell.cell_id || ''} (${Number(maxCell.lat).toFixed(4)}°N, ${Number(maxCell.lon).toFixed(4)}°E)` : 'Điểm khô nhất trên lưới'}</td>
-                    </tr>
-                    <tr>
-                        <td><strong>TVDI Cực tiểu (Điểm ẩm nhất)</strong></td>
-                        <td class="center" style="font-weight: 700; color: #16a34a;">${minTvdiStr}</td>
-                        <td class="center">[ 0.0 – 1.0 ]</td>
-                        <td>${minCell ? `Ô lưới ID ${minCell.cell_id || ''} (${Number(minCell.lat).toFixed(4)}°N, ${Number(minCell.lon).toFixed(4)}°E)` : 'Điểm ẩm nhất trên lưới'}</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Tỷ lệ diện tích hạn hán (TVDI ≥ 0.625)</strong></td>
-                        <td class="center" style="font-weight: 800; color: ${droughtNum >= 20 ? '#dc2626' : '#ea580c'};">${droughtPct}%</td>
-                        <td class="center">% diện tích</td>
-                        <td>Tổng cộng <strong>${droughtCellCount}</strong> ô lưới thuộc cấp hạn vừa, hạn nặng và khô khốc</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Nhiệt độ bề mặt đất LST trung bình</strong></td>
-                        <td class="center" style="font-weight: 700; color: #b45309;">${avgLstStr}</td>
-                        <td class="center">Độ C (°C)</td>
-                        <td>Nhiệt độ phát xạ viễn thám từ kênh hồng ngoại nhiệt TIRS</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Chỉ số thực vật NDVI trung bình</strong></td>
-                        <td class="center" style="font-weight: 700; color: #15803d;">${avgNdviStr}</td>
-                        <td class="center">[ -1.0 – 1.0 ]</td>
-                        <td>Mật độ và sức khỏe sinh khối thực bì bao phủ bề mặt</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Phần III: Bảng phân cấp 8 cấp độ hạn hán -->
-        <div class="rep-section">
-            <div class="rep-sec-title">III. Phân bố diện tích theo 8 cấp độ khô hạn chuẩn TVDI</div>
-            <table class="rep-table">
-                <thead>
-                    <tr>
-                        <th style="width: 10%;">Cấp độ</th>
-                        <th style="width: 14%;">Khoảng TVDI</th>
-                        <th style="width: 25%;">Tên cấp độ hạn</th>
-                        <th style="width: 13%;">Số ô lưới</th>
-                        <th style="width: 14%;">Tỷ lệ (%)</th>
-                        <th>Mức độ rủi ro & Cảnh báo</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${classDefs.map(c => {
-        const cnt = counts[c.level] || 0;
-        const pct = totalActive > 0 ? ((cnt / totalActive) * 100).toFixed(1) : '0.0';
-        return `
-                            <tr>
-                                <td class="center"><span style="display:inline-block; width:12px; height:12px; border-radius:2px; background:${c.color}; vertical-align:middle; margin-right:4px;"></span><strong>CẤP ${c.level}</strong></td>
-                                <td class="center"><code>${c.range}</code></td>
-                                <td><strong>${c.label}</strong></td>
-                                <td class="center">${cnt} ô</td>
-                                <td class="center" style="font-weight: 700;">${pct}%</td>
-                                <td style="font-size: 0.8rem;">${c.risk}</td>
-                            </tr>
-                        `;
-    }).join('')}
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Phần IV: Diễn biến chuỗi thời gian nếu có -->
-        ${seriesSectionHtml}
-
-        <!-- Phần V: Đánh giá nguy cơ & Khuyến nghị quản lý -->
-        <div class="rep-section">
-            <div class="rep-sec-title">V. Đánh giá nguy cơ & Khuyến nghị quản lý tài nguyên</div>
-            ${recomHtml}
-        </div>
-
-        <!-- Phần VI: Chữ ký phê duyệt -->
-        <div class="rep-signatures">
-            <div class="rep-sig-col">
-                <div class="sig-title">
-                    NGƯỜI LẬP BÁO CÁO<br>
-                    <em>(Ký, ghi rõ họ tên)</em>
-                </div>
-                <div class="sig-name">Kỹ sư Hệ thống GIS & Viễn thám</div>
-            </div>
-            <div class="rep-sig-col">
-                <div class="sig-title">
-                    GIÁM ĐỐC TRUNG TÂM<br>
-                    <em>(Ký tên, đóng dấu)</em>
-                </div>
-                <div class="sig-name">Lãnh đạo đơn vị phê duyệt</div>
-            </div>
-        </div>
-    `;
-}
-
-function setupReportModal() {
-    const btnOpen = document.getElementById('btn-open-report');
-    const modal = document.getElementById('report-modal');
-    const btnClose = document.getElementById('btn-close-report-modal');
-    const btnCloseFooter = document.getElementById('btn-close-report-footer');
-    const btnPrint = document.getElementById('btn-print-report');
-    const btnExcel = document.getElementById('btn-export-excel');
-
-    if (!btnOpen || !modal) return;
-
-    btnOpen.addEventListener('click', async () => {
-        const isLoggedIn = !!state.auth.token && (state.auth.role === 'admin' || state.auth.role === 'user');
-        if (!isLoggedIn) {
-            showToast('Bạn phải đăng nhập để sử dụng dịch vụ này!');
-            const loginModal = document.getElementById('login-modal');
-            if (loginModal) {
-                loginModal.style.display = 'flex';
-                const loginAlert = document.getElementById('login-alert');
-                if (loginAlert) {
-                    loginAlert.style.display = 'block';
-                    loginAlert.className = 'gee-modal-alert warning';
-                    loginAlert.innerHTML = '<i class="fa-solid fa-lock"></i> Bạn phải đăng nhập để sử dụng dịch vụ Xuất báo cáo!';
-                }
-                const loginUname = document.getElementById('login-username');
-                if (loginUname) loginUname.focus();
-            }
-            return;
-        }
-
-        if (!state.currentGridData) {
-            await loadDataForCurrentDate();
-        }
-        generateReportPaper();
-        modal.style.display = 'flex';
-    });
-
-    const closeModal = () => {
-        modal.style.display = 'none';
-    };
-
-    if (btnClose) btnClose.addEventListener('click', closeModal);
-    if (btnCloseFooter) btnCloseFooter.addEventListener('click', closeModal);
-
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) closeModal();
-    });
-
-    if (btnPrint) {
-        btnPrint.addEventListener('click', () => {
-            const isLoggedIn = !!state.auth.token && (state.auth.role === 'admin' || state.auth.role === 'user');
-            if (!isLoggedIn) {
-                showToast('Bạn phải đăng nhập để sử dụng dịch vụ này!');
-                modal.style.display = 'none';
-                const loginModal = document.getElementById('login-modal');
-                if (loginModal) loginModal.style.display = 'flex';
-                return;
-            }
-            window.print();
-        });
-    }
-
-    if (btnExcel) {
-        btnExcel.addEventListener('click', () => {
-            const isLoggedIn = !!state.auth.token && (state.auth.role === 'admin' || state.auth.role === 'user');
-            if (!isLoggedIn) {
-                showToast('Bạn phải đăng nhập để sử dụng dịch vụ này!');
-                modal.style.display = 'none';
-                const loginModal = document.getElementById('login-modal');
-                if (loginModal) loginModal.style.display = 'flex';
-                return;
-            }
-            exportToCSV();
-        });
-    }
-
-    const btnGeoJson = document.getElementById('btn-export-geojson');
-    if (btnGeoJson) {
-        btnGeoJson.addEventListener('click', () => {
-            const isLoggedIn = !!state.auth.token && (state.auth.role === 'admin' || state.auth.role === 'user');
-            if (!isLoggedIn) {
-                showToast('Bạn phải đăng nhập để sử dụng dịch vụ này!');
-                modal.style.display = 'none';
-                const loginModal = document.getElementById('login-modal');
-                if (loginModal) loginModal.style.display = 'flex';
-                return;
-            }
-            exportToGeoJSON();
-        });
-    }
-}
+// Bản tin & Báo cáo (generateReportPaper, setupReportModal) được quản lý trong frontend/js/bulletin.js
 
 // Xuất lưới dữ liệu đang hiển thị ra GeoJSON (EPSG:4326) – mở trực tiếp được trong QGIS / ArcGIS
 function exportToGeoJSON() {
@@ -4252,6 +4029,8 @@ function setupAuth() {
         const regBtn = document.getElementById('btn-auth-register');
 
         const isLoggedIn = !!state.auth.token && (state.auth.role === 'admin' || state.auth.role === 'user');
+        const isAdmin = isLoggedIn && (state.auth.is_admin || state.auth.role === 'admin');
+        document.body.classList.toggle('is-admin', isAdmin);
 
         if (isLoggedIn) {
             if (userMenuWrapper) userMenuWrapper.style.display = 'inline-flex';
@@ -4262,7 +4041,7 @@ function setupAuth() {
             if (headerUserName) headerUserName.innerText = uName;
             if (userDropdownName) userDropdownName.innerText = uName;
 
-            if (state.auth.is_admin || state.auth.role === 'admin') {
+            if (isAdmin) {
                 if (badgeRoleText) {
                     badgeRoleText.className = 'badge-role admin';
                     badgeRoleText.innerHTML = `<i class="fa-solid fa-shield-halved"></i> <span id="header-user-name">${uName}</span>`;
@@ -4307,6 +4086,12 @@ function setupAuth() {
             if (btnGeeModal) btnGeeModal.style.display = 'none';
             if (adminBox) adminBox.style.display = 'none';
         }
+        if (state.currentDate) {
+            updateTimelineUI(state.currentDate, isForecastDate(state.currentDate));
+        }
+        if (typeof updateMapTitle === 'function') updateMapTitle();
+        const tag = document.getElementById('stats-period-tag');
+        if (tag && typeof describeCurrentView === 'function') tag.innerText = describeCurrentView(true);
     }
 
     // Kiểm tra token lưu trữ
@@ -4842,16 +4627,19 @@ function setupWardsModule() {
 }
 
 async function loadWardsData(targetDate) {
-    // Xếp hạng theo đúng bộ dữ liệu đang hiển thị: kỳ quan trắc chứa ngày chọn, trung bình theo khoảng hoặc dự báo AI
+    // Xếp hạng theo đúng bộ dữ liệu đang hiển thị: kỳ quan trắc, trung bình theo khoảng hoặc dự báo (7 ngày giả lập / 12 tháng AI)
     const view = state.currentView;
     let d = targetDate || state.currentDate || '2024-03-01';
     let range = '';
+    let horizonParam = '';
     if (view && view.kind === 'cycle') d = view.date;
     else if (view && view.kind === 'aggregate') {
         d = view.start;
         range = `&start=${view.start}&end=${view.end}`;
+    } else if (view && view.kind === 'forecast' && view.horizon) {
+        horizonParam = `&horizon=${view.horizon}`;
     }
-    const baseUrl = `/api/wards?date=${d}&sort_by=${state.wards.sortBy}${range}`;
+    const baseUrl = `/api/wards?date=${d}&sort_by=${state.wards.sortBy}${range}${horizonParam}`;
 
     let url = baseUrl;
     const t = state.wards.thresholds;
@@ -4887,13 +4675,17 @@ async function loadWardsData(targetDate) {
     }
 }
 
-// Ghi chú nguồn số liệu của bảng xếp hạng (mốc dự báo AI chỉ có TVDI do mô hình dự báo)
+// Ghi chú nguồn số liệu của bảng xếp hạng (hiển thị theo cột thực tế trong CSDL)
 function renderWardsSourceNote(data) {
     const note = document.getElementById('wards-source-note');
     if (!note) return;
     if (data.is_forecast) {
+        const hasLst = (data.wards || []).some(w => w.lst_c !== null && w.lst_c !== undefined);
+        const hasNdvi = (data.wards || []).some(w => w.ndvi !== null && w.ndvi !== undefined);
         note.style.display = 'block';
-        note.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Mốc dự báo AI: TVDI do mô hình Random Forest dự báo; LST và NDVI trong bảng là giá trị <strong>ước tính quy đổi từ TVDI</strong>, chỉ mang tính tham khảo.';
+        note.innerHTML = (hasLst && hasNdvi)
+            ? '<i class="fa-solid fa-wand-magic-sparkles"></i> Mốc dự báo: giá trị LST, NDVI, TVDI đọc từ kết quả dự báo lưu trong CSDL.'
+            : '<i class="fa-solid fa-wand-magic-sparkles"></i> Mốc dự báo: TVDI từ CSDL dự báo (LST / NDVI chưa có dữ liệu dự báo sẽ hiển thị “--”).';
     } else if (state.currentView && state.currentView.kind === 'aggregate') {
         note.style.display = 'block';
         note.innerHTML = `<i class="fa-solid fa-calendar-week"></i> Giá trị trung bình ${describeCurrentView(true)} – nội suy IDW tại tâm phường/xã.`;
@@ -4910,7 +4702,7 @@ function refreshSelectedWardDetail() {
     const ward = (state.wards.allList || []).find(w => w.ward_id === wid) || (state.wards.list || []).find(w => w.ward_id === wid);
     if (!ward) return;
     const theme = getDroughtUITheme(ward.tvdi);
-    const values = state.wards.isForecast ? { lst: null, ndvi: null } : { lst: ward.lst_c, ndvi: ward.ndvi };
+    const values = { lst: ward.lst_c, ndvi: ward.ndvi };
     renderPointDetail(ward.lat, ward.lon, ward.tvdi, theme, state.selectedPoint.locationName, values);
 }
 
@@ -4975,7 +4767,10 @@ function renderWardsTable() {
 
     tbody.innerHTML = list.map(w => {
         const isTop3 = w.rank <= 3;
-        const isHot = w.lst_c >= 40.0;
+        const hasLst = w.lst_c !== null && w.lst_c !== undefined && !isNaN(w.lst_c);
+        const hasNdvi = w.ndvi !== null && w.ndvi !== undefined && !isNaN(w.ndvi);
+        const hasTvdi = w.tvdi !== null && w.tvdi !== undefined && !isNaN(w.tvdi);
+        const isHot = hasLst && w.lst_c >= 40.0;
         const isSelected = state.wards.selectedWardId === w.ward_id;
 
         return `
@@ -4988,14 +4783,14 @@ function renderWardsTable() {
                     </div>
                 </td>
                 <td class="text-right">
-                    <span class="ward-val-badge val-lst ${isHot ? 'hot' : ''}">${w.lst_c}°</span>
+                    <span class="ward-val-badge val-lst ${isHot ? 'hot' : ''}">${hasLst ? `${w.lst_c}°` : '--'}</span>
                 </td>
                 <td class="text-right">
-                    <span class="ward-val-badge val-ndvi">${w.ndvi}</span>
+                    <span class="ward-val-badge val-ndvi">${hasNdvi ? w.ndvi : '--'}</span>
                 </td>
                 <td class="text-right">
                     <span class="ward-val-badge val-tvdi" style="background-color: ${w.color}; color: ${readableTextColor(w.color)}; font-weight: 700;" title="${w.drought_label}">
-                        ${w.tvdi}
+                        ${hasTvdi ? w.tvdi : '--'}
                     </span>
                 </td>
             </tr>
@@ -5041,7 +4836,7 @@ function selectWard(wardId, updateInput = false) {
     // Cập nhật Card 1 thông tin chi tiết khu vực tại Sidebar
     const theme = getDroughtUITheme(ward.tvdi);
     const locationName = `${ward.name}, ${ward.district} (${ward.province || 'TP.HCM'})`;
-    const wardValues = state.wards.isForecast ? { lst: null, ndvi: null } : { lst: ward.lst_c, ndvi: ward.ndvi };
+    const wardValues = { lst: ward.lst_c, ndvi: ward.ndvi };
     selectionLayerGroup.clearLayers();
     state.selectedMarker = null;
     state.selectedPoint = { lat: ward.lat, lon: ward.lon, interp: null, locationName, isWard: true };
@@ -5126,20 +4921,20 @@ function selectWard(wardId, updateInput = false) {
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;">
                         <div style="background: #fff7ed; padding: 5px 8px; border-radius: 6px; border: 1px solid #fed7aa;">
                             <span style="font-size: 0.68rem; color: #9a3412; font-weight: 600; display: block;">LST (Nhiệt độ):</span>
-                            <strong style="font-size: 0.95rem; color: #c2410c;">${ward.lst_c}°C</strong>${state.wards.isForecast ? ' <small style="color:#9a3412;">(ước tính)</small>' : ''}
+                            <strong style="font-size: 0.95rem; color: #c2410c;">${(ward.lst_c !== null && ward.lst_c !== undefined) ? `${ward.lst_c}°C` : '--'}</strong>
                         </div>
                         <div style="background: #f0fdf4; padding: 5px 8px; border-radius: 6px; border: 1px solid #bbf7d0;">
                             <span style="font-size: 0.68rem; color: #166534; font-weight: 600; display: block;">NDVI (Thực bì):</span>
-                            <strong style="font-size: 0.95rem; color: #15803d;">${ward.ndvi}</strong>${state.wards.isForecast ? ' <small style="color:#166534;">(ước tính)</small>' : ''}
+                            <strong style="font-size: 0.95rem; color: #15803d;">${(ward.ndvi !== null && ward.ndvi !== undefined) ? ward.ndvi : '--'}</strong>
                         </div>
                     </div>
-                    <div style="background: #fefce8; padding: 7px 9px; border-radius: 6px; border: 1px solid #fef08a; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="background: ${theme.bgColor}; padding: 7px 9px; border-radius: 6px; border: 1px solid ${theme.borderColor}; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
                         <div>
-                            <span style="font-size: 0.7rem; color: #854d0e; font-weight: 600; display: block;">TVDI Khô hạn:</span>
-                            <strong style="font-size: 1.05rem; font-weight: 800; color: ${ward.color || '#ea580c'};">${ward.tvdi}</strong>
+                            <span style="font-size: 0.7rem; color: ${theme.titleColor}; font-weight: 700; display: block;">TVDI Khô hạn:</span>
+                            <strong style="font-size: 1.08rem; font-weight: 800; color: ${theme.scoreColor};">${(ward.tvdi !== null && ward.tvdi !== undefined) ? Number(ward.tvdi).toFixed(3) : '--'}</strong>
                         </div>
-                        <span style="background-color: ${ward.color || '#ea580c'}; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.2);">
-                            ${ward.drought_label}
+                        <span style="background-color: ${theme.badgeBg}; color: ${theme.badgeText}; border: 1px solid ${theme.badgeBorder}; padding: 3px 8px; border-radius: 4px; font-size: 0.74rem; font-weight: 700;">
+                            ${ward.drought_label || theme.label}
                         </span>
                     </div>
                 </div>
@@ -5187,7 +4982,9 @@ function renderWardsMapMarkers() {
             fillOpacity: 0.85,
         });
 
-        circle.bindTooltip(`<strong>${w.name}</strong> (${w.district})<br>LST: ${w.lst_c}°C | TVDI: ${w.tvdi}`, {
+        const lstTxt = (w.lst_c !== null && w.lst_c !== undefined) ? `${w.lst_c}°C` : '--';
+        const tvdiTxt = (w.tvdi !== null && w.tvdi !== undefined) ? w.tvdi : '--';
+        circle.bindTooltip(`<strong>${w.name}</strong> (${w.district})<br>LST: ${lstTxt} | TVDI: ${tvdiTxt}`, {
             direction: 'top',
             offset: [0, -6],
             className: 'ward-map-tooltip'
@@ -5303,13 +5100,17 @@ function setupAnimationController() {
 
         const rangeMode = rangeSelect ? rangeSelect.value : 'auto';
         const currDate = state.currentDate || (state.dates && state.dates[state.currentDateIndex]) || '';
-        const isForecastDate = state.forecastDates.includes(currDate) || currDate >= '2026-01-01' || state.isAIMode;
+        const inForecast = state.isAIMode || isForecastDate(currDate);
 
-        const forecastList = state.dates.filter(d => state.forecastDates.includes(d) || d >= '2026-01-01');
-        const historicalList = state.dates.filter(d => !state.forecastDates.includes(d) && d < '2026-01-01');
+        const forecastList = state.forecastHorizon === 'daily_7d'
+            ? (state.daily7Dates.length ? state.daily7Dates : state.forecastDates)
+            : (state.monthly12Dates.length ? state.monthly12Dates : state.forecastDates);
+        const historicalList = state.observedDates.length
+            ? state.observedDates
+            : state.dates.filter(d => !state.forecastDates.includes(d) && d < '2026-01-01');
 
         // Chế độ tổng hợp theo tháng / năm: mỗi khung hình là một tháng / một năm quan trắc
-        if (!isForecastDate && (state.aggregation === 'month' || state.aggregation === 'year')) {
+        if (!inForecast && (state.aggregation === 'month' || state.aggregation === 'year')) {
             const keyLen = state.aggregation === 'month' ? 7 : 4;
             const seen = new Set();
             return historicalList.filter(d => {
@@ -5319,20 +5120,18 @@ function setupAnimationController() {
                 return true;
             });
         }
-        if (!isForecastDate && state.aggregation === 'period') {
+        if (!inForecast && state.aggregation === 'period') {
             return [];
         }
 
-        if (rangeMode === 'forecast' || (rangeMode === 'auto' && isForecastDate)) {
-            // Chuỗi Dự báo AI (2026 – 2027)
+        if (rangeMode === 'forecast' || (rangeMode === 'auto' && inForecast)) {
             return forecastList.length > 0 ? forecastList : state.dates;
         } else if (rangeMode === 'year') {
-            // Theo năm đang chọn trên giao diện
             const selYear = currDate.substring(0, 4);
-            const yearList = state.dates.filter(d => d.startsWith(selYear));
-            return yearList.length > 0 ? yearList : state.dates;
-        } else if (rangeMode === 'monitor' || (rangeMode === 'auto' && !isForecastDate)) {
-            // Chuỗi Quan sát viễn thám thực tế (2017 – 2025)
+            const baseList = inForecast ? forecastList : historicalList;
+            const yearList = baseList.filter(d => d.startsWith(selYear));
+            return yearList.length > 0 ? yearList : baseList;
+        } else if (rangeMode === 'monitor' || (rangeMode === 'auto' && !inForecast)) {
             return historicalList.length > 0 ? historicalList : state.dates;
         }
 
@@ -6107,11 +5906,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error('Lỗi nạp dự báo 15 ngày ban đầu:', e);
     }
 
-    // 10. Thiết lập Báo cáo xuất PDF A4 & Excel CSV (Ý 1)
+    // 10. Thiết lập Bản tin & Thành lập bản đồ (Export PDF / PNG / Excel CSV / GeoJSON)
     try {
         setupReportModal();
+        if (typeof setupMapComposer === 'function') setupMapComposer();
     } catch (e) {
-        console.error('Lỗi thiết lập Báo cáo:', e);
+        console.error('Lỗi thiết lập Bản tin / Thành lập bản đồ:', e);
     }
 
     // 11. Thiết lập tương tác Bottom Sheet trên Mobile (Ý 3)

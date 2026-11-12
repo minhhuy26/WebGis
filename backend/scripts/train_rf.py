@@ -270,61 +270,127 @@ def train_and_evaluate():
                 "pred": p_float
             })
 
-    # --- 5. Lưu vào CSDL PostgreSQL (tvdi.tvdi_forecast) và File ---
+    # --- 5. Lưu vào CSDL PostgreSQL (tvdi.model_runs & tvdi.tvdi_forecast) và File ---
     print("\n[5/5] Đang lưu kết quả dự báo vào PostgreSQL và file hệ thống...")
-    
-    with engine.begin() as conn:
-        # Xóa dữ liệu cũ trong bảng tvdi_forecast
-        conn.execute(text("TRUNCATE TABLE tvdi.tvdi_forecast RESTART IDENTITY;"))
 
-        # 5.1 Nạp kết quả toàn vùng (Test 2024-2025)
+    def _drought_lvl(val):
+        if val is None:
+            return None
+        v = max(0.0, min(1.0, float(val)))
+        for idx, thr in enumerate((0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875), start=1):
+            if v <= thr:
+                return idx
+        return 8
+
+    metrics_payload = {
+        "grid_metrics": {"r2_score": round(r2_grid, 4), "rmse": round(rmse_grid, 4), "mae": round(mae_grid, 4)},
+        "overall_metrics": {"r2_score": round(r2_series, 4), "rmse": round(rmse_series, 4), "mae": round(mae_series, 4)},
+    }
+
+    with engine.begin() as conn:
+        # Lưu phiên huấn luyện vào tvdi.model_runs
+        model_run_id = conn.execute(
+            text("""
+                INSERT INTO tvdi.model_runs (
+                    model_name, model_version, target_index, satellite_source,
+                    horizon_type, is_simulated, train_period, test_period,
+                    r2_score, rmse, mae, metrics_json, is_active
+                )
+                VALUES (
+                    'Random Forest Regressor', 'v1.0', 'TVDI', 'LANDSAT',
+                    '15day', FALSE, '2017-01-01 đến 2023-12-12', '2024-01-01 đến 2025-12-12',
+                    :r2, :rmse, :mae, CAST(:mjson AS jsonb), TRUE
+                )
+                RETURNING id
+            """),
+            {
+                "r2": round(float(r2_grid), 4),
+                "rmse": round(float(rmse_grid), 4),
+                "mae": round(float(mae_grid), 4),
+                "mjson": json.dumps(metrics_payload, ensure_ascii=False),
+            },
+        ).scalar()
+
+        # Xóa dữ liệu test_eval / 15day cũ của LANDSAT trước khi nạp lại
+        conn.execute(
+            text("""
+                DELETE FROM tvdi.tvdi_forecast
+                WHERE satellite_source = 'LANDSAT'
+                  AND horizon_type IN ('test_eval', '15day')
+            """)
+        )
+
+        # Nạp kết quả dự báo chuẩn hóa
         insert_sql = text("""
-            INSERT INTO tvdi.tvdi_forecast (date, cell_id, tvdi_actual, tvdi_pred, residual, model_name)
-            VALUES (:date, :cell_id, :tvdi_actual, :tvdi_pred, :residual, :model_name)
+            INSERT INTO tvdi.tvdi_forecast (
+                date, cell_id, tvdi_actual, tvdi_pred, residual, model_name,
+                horizon_type, satellite_source, is_simulated, model_run_id, drought_level
+            )
+            VALUES (
+                :date, :cell_id, :tvdi_actual, :tvdi_pred, :residual, :model_name,
+                :horizon_type, 'LANDSAT', FALSE, :model_run_id, :drought_level
+            )
+            ON CONFLICT DO NOTHING
         """)
 
         records = []
         for _, r in test_series.iterrows():
+            p = float(round(r["pred"], 4))
             records.append({
                 "date": r["date"].strftime("%Y-%m-%d"),
                 "cell_id": None,
                 "tvdi_actual": float(round(r["TVDI"], 4)),
-                "tvdi_pred": float(round(r["pred"], 4)),
+                "tvdi_pred": p,
                 "residual": float(round(r["residual"], 4)),
-                "model_name": "Random Forest"
+                "model_name": "Random Forest",
+                "horizon_type": "test_eval",
+                "model_run_id": model_run_id,
+                "drought_level": _drought_lvl(p),
             })
 
-        # 5.2 Nạp tương lai toàn vùng (2026)
+        # 5.2 Nạp tương lai toàn vùng
         for item in future_series_preds:
+            p = float(round(item["pred"], 4))
             records.append({
                 "date": item["date"],
                 "cell_id": None,
                 "tvdi_actual": None,
-                "tvdi_pred": float(round(item["pred"], 4)),
+                "tvdi_pred": p,
                 "residual": None,
-                "model_name": "Random Forest"
+                "model_name": "Random Forest",
+                "horizon_type": "15day",
+                "model_run_id": model_run_id,
+                "drought_level": _drought_lvl(p),
             })
 
         # 5.3 Nạp kết quả ô lưới (Test 2024-2025)
         for _, r in test_grid.iterrows():
+            p = float(round(r["pred"], 4))
             records.append({
                 "date": r["date"].strftime("%Y-%m-%d"),
                 "cell_id": int(r["cell_id"]),
                 "tvdi_actual": float(round(r["TVDI"], 4)),
-                "tvdi_pred": float(round(r["pred"], 4)),
+                "tvdi_pred": p,
                 "residual": float(round(r["residual"], 4)),
-                "model_name": "Random Forest"
+                "model_name": "Random Forest",
+                "horizon_type": "test_eval",
+                "model_run_id": model_run_id,
+                "drought_level": _drought_lvl(p),
             })
 
-        # 5.4 Nạp kết quả ô lưới tương lai (2026)
+        # 5.4 Nạp kết quả ô lưới tương lai
         for item in future_grid_preds:
+            p = item["pred"]
             records.append({
                 "date": item["date"],
                 "cell_id": item["cell_id"],
                 "tvdi_actual": None,
-                "tvdi_pred": item["pred"],
+                "tvdi_pred": p,
                 "residual": None,
-                "model_name": "Random Forest"
+                "model_name": "Random Forest",
+                "horizon_type": "15day",
+                "model_run_id": model_run_id,
+                "drought_level": _drought_lvl(p),
             })
 
         print(f"  - Đang ghi {len(records):,} bản ghi dự báo vào bảng tvdi.tvdi_forecast...")

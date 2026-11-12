@@ -12,7 +12,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from sqlalchemy import text, inspect
 from backend.app.config import settings
 from backend.app.database import engine, Base
-from backend.app.models import TvdiGrid, TvdiSeries, Region, GridCell, TvdiForecast  # noqa: F401
+from backend.app.models import (  # noqa: F401
+    Bulletin,
+    DroughtClass,
+    GeeSyncLog,
+    GridCell,
+    ModelRun,
+    Region,
+    TvdiForecast,
+    TvdiGrid,
+    TvdiSeries,
+    User,
+    UserActivity,
+    Ward,
+    WardForecast,
+    WardObservation,
+)
 
 
 def create_database_if_not_exists():
@@ -54,8 +69,31 @@ def create_schema():
 
 
 def create_tables():
-    """Tạo tất cả bảng từ SQLAlchemy models."""
+    """Tạo tất cả bảng từ SQLAlchemy models và khởi tạo danh mục cấp độ hạn chuẩn."""
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_tvdi_forecast_target
+            ON tvdi.tvdi_forecast (date, COALESCE(cell_id, -1), horizon_type, satellite_source);
+        """))
+        for lvl, cls in enumerate(settings.TVDI_CLASSES, start=1):
+            conn.execute(text("""
+                INSERT INTO tvdi.drought_classes (level, min_tvdi, max_tvdi, label, description, color)
+                VALUES (:level, :min_tvdi, :max_tvdi, :label, :description, :color)
+                ON CONFLICT (level) DO UPDATE SET
+                    min_tvdi = EXCLUDED.min_tvdi,
+                    max_tvdi = EXCLUDED.max_tvdi,
+                    label = EXCLUDED.label,
+                    description = EXCLUDED.description,
+                    color = EXCLUDED.color;
+            """), {
+                "level": lvl,
+                "min_tvdi": cls["min"],
+                "max_tvdi": cls["max"],
+                "label": cls["label"],
+                "description": cls["description"],
+                "color": cls["color"],
+            })
     # Kiểm tra bảng đã tạo
     inspector = inspect(engine)
     tables = inspector.get_table_names(schema="tvdi")

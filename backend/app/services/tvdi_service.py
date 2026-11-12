@@ -86,17 +86,31 @@ def get_drought_class(tvdi: Optional[float]) -> Dict[str, Any]:
         }
 
 
-def get_available_dates(db: Session) -> List[str]:
-    """Lấy danh sách tất cả các mốc thời gian có dữ liệu (YYYY-MM-DD)."""
-    sql = text("SELECT DISTINCT date FROM tvdi.tvdi_series ORDER BY date ASC")
-    rows = db.execute(sql).fetchall()
+def get_available_dates(
+    db: Session,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+) -> List[str]:
+    """Lấy danh sách tất cả các mốc thời gian có dữ liệu hiện trạng (YYYY-MM-DD)."""
+    sql = text("""
+        SELECT DISTINCT date
+        FROM tvdi.tvdi_series
+        WHERE satellite_source = :src AND granularity = :gran
+        ORDER BY date ASC
+    """)
+    rows = db.execute(sql, {"src": satellite_source, "gran": granularity}).fetchall()
     return [r[0].strftime("%Y-%m-%d") if isinstance(r[0], (date,)) else str(r[0]) for r in rows]
 
 
-def get_grid_by_date(db: Session, date_str: str) -> Dict[str, Any]:
+def get_grid_by_date(
+    db: Session,
+    date_str: str,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+) -> Dict[str, Any]:
     """
-    Lấy dữ liệu ô lưới cho một mốc thời gian dưới dạng GeoJSON FeatureCollection.
-    Bao gồm hình học đa giác (Polygon) và các chỉ số LST, NDVI, TVDI, nhãn hạn hán và màu.
+    Lấy dữ liệu hiện trạng 3 chỉ số (LST, NDVI, TVDI) theo ô lưới cho một mốc ngày
+    dưới dạng GeoJSON FeatureCollection.
     """
     sql = text("""
         SELECT 
@@ -109,17 +123,25 @@ def get_grid_by_date(db: Session, date_str: str) -> Dict[str, Any]:
             g.n_img,
             ST_AsGeoJSON(c.geom_polygon)::json AS geom_polygon
         FROM tvdi.grid_cells c
-        LEFT JOIN tvdi.tvdi_grid g ON c.cell_id = g.cell_id AND g.date = :date
+        LEFT JOIN tvdi.tvdi_grid g
+            ON c.cell_id = g.cell_id
+           AND g.date = :date
+           AND g.satellite_source = :src
+           AND g.granularity = :gran
         WHERE c.geom_polygon IS NOT NULL AND NOT ST_IsEmpty(c.geom_polygon)
         ORDER BY c.cell_id ASC;
     """)
 
-    rows = db.execute(sql, {"date": date_str}).fetchall()
+    rows = db.execute(
+        sql, {"date": date_str, "src": satellite_source, "gran": granularity}
+    ).fetchall()
     features = _grid_rows_to_features(rows)
 
     return {
         "type": "FeatureCollection",
         "date": date_str,
+        "satellite_source": satellite_source,
+        "granularity": granularity,
         "total_cells": len(features),
         "features": features,
     }
@@ -161,7 +183,13 @@ def _grid_rows_to_features(rows) -> List[Dict[str, Any]]:
     return features
 
 
-def get_grid_aggregate(db: Session, start_str: str, end_str: str) -> Dict[str, Any]:
+def get_grid_aggregate(
+    db: Session,
+    start_str: str,
+    end_str: str,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+) -> Dict[str, Any]:
     """
     Trung bình LST, NDVI, TVDI của từng ô lưới trong khoảng thời gian [start, end]
     (tổng hợp theo tháng, theo năm hoặc toàn giai đoạn). Trả về GeoJSON cùng cấu trúc với get_grid_by_date.
@@ -176,6 +204,8 @@ def get_grid_aggregate(db: Session, start_str: str, end_str: str) -> Dict[str, A
                    COUNT(tvdi) AS n_obs
             FROM tvdi.tvdi_grid
             WHERE date BETWEEN :s AND :e
+              AND satellite_source = :src
+              AND granularity = :gran
             GROUP BY cell_id
         )
         SELECT
@@ -193,12 +223,19 @@ def get_grid_aggregate(db: Session, start_str: str, end_str: str) -> Dict[str, A
         WHERE c.geom_polygon IS NOT NULL AND NOT ST_IsEmpty(c.geom_polygon)
         ORDER BY c.cell_id ASC;
     """)
-    rows = db.execute(sql, {"s": start_str, "e": end_str}).fetchall()
+    rows = db.execute(
+        sql, {"s": start_str, "e": end_str, "src": satellite_source, "gran": granularity}
+    ).fetchall()
     features = _grid_rows_to_features(rows)
 
     n_dates = db.execute(
-        text("SELECT COUNT(*) FROM tvdi.tvdi_series WHERE date BETWEEN :s AND :e"),
-        {"s": start_str, "e": end_str},
+        text("""
+            SELECT COUNT(*) FROM tvdi.tvdi_series
+            WHERE date BETWEEN :s AND :e
+              AND satellite_source = :src
+              AND granularity = :gran
+        """),
+        {"s": start_str, "e": end_str, "src": satellite_source, "gran": granularity},
     ).scalar() or 0
 
     return {
@@ -206,6 +243,8 @@ def get_grid_aggregate(db: Session, start_str: str, end_str: str) -> Dict[str, A
         "date": start_str,
         "start": start_str,
         "end": end_str,
+        "satellite_source": satellite_source,
+        "granularity": granularity,
         "aggregate": True,
         "n_dates": int(n_dates),
         "total_cells": len(features),
@@ -213,8 +252,13 @@ def get_grid_aggregate(db: Session, start_str: str, end_str: str) -> Dict[str, A
     }
 
 
-def get_cell_time_series(db: Session, cell_id: int) -> Dict[str, Any]:
-    """Lấy toàn bộ chuỗi thời gian 2017-2025 cho một ô lưới cụ thể."""
+def get_cell_time_series(
+    db: Session,
+    cell_id: int,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+) -> Dict[str, Any]:
+    """Lấy toàn bộ chuỗi thời gian hiện trạng (LST, NDVI, TVDI) cho một ô lưới cụ thể."""
     sql = text("""
         SELECT 
             date,
@@ -224,9 +268,13 @@ def get_cell_time_series(db: Session, cell_id: int) -> Dict[str, Any]:
             n_img
         FROM tvdi.tvdi_grid
         WHERE cell_id = :cell_id
+          AND satellite_source = :src
+          AND granularity = :gran
         ORDER BY date ASC;
     """)
-    rows = db.execute(sql, {"cell_id": cell_id}).fetchall()
+    rows = db.execute(
+        sql, {"cell_id": cell_id, "src": satellite_source, "gran": granularity}
+    ).fetchall()
 
     items = []
     for r in rows:
@@ -249,6 +297,8 @@ def get_cell_time_series(db: Session, cell_id: int) -> Dict[str, Any]:
 
     return {
         "cell_id": cell_id,
+        "satellite_source": satellite_source,
+        "granularity": granularity,
         "lon": float(coord_row[0]) if coord_row else None,
         "lat": float(coord_row[1]) if coord_row else None,
         "total_records": len(items),
@@ -256,7 +306,11 @@ def get_cell_time_series(db: Session, cell_id: int) -> Dict[str, Any]:
     }
 
 
-def get_overall_time_series(db: Session) -> Dict[str, Any]:
+def get_overall_time_series(
+    db: Session,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+) -> Dict[str, Any]:
     """Lấy chuỗi thời gian trung bình toàn khu vực TP.HCM."""
     sql = text("""
         SELECT 
@@ -270,9 +324,10 @@ def get_overall_time_series(db: Session) -> Dict[str, Any]:
             ROUND(ts_min::numeric, 2) AS ts_min,
             fit_ok
         FROM tvdi.tvdi_series
+        WHERE satellite_source = :src AND granularity = :gran
         ORDER BY date ASC;
     """)
-    rows = db.execute(sql).fetchall()
+    rows = db.execute(sql, {"src": satellite_source, "gran": granularity}).fetchall()
 
     # Dải phân vị P5 – P95 của các ô lưới tại từng mốc (độ phân tán không gian)
     pct_sql = text("""
@@ -285,10 +340,11 @@ def get_overall_time_series(db: Session) -> Dict[str, Any]:
             percentile_cont(0.05) WITHIN GROUP (ORDER BY tvdi) AS tvdi_p5,
             percentile_cont(0.95) WITHIN GROUP (ORDER BY tvdi) AS tvdi_p95
         FROM tvdi.tvdi_grid
+        WHERE satellite_source = :src AND granularity = :gran
         GROUP BY date;
     """)
     pct_map = {}
-    for p in db.execute(pct_sql).fetchall():
+    for p in db.execute(pct_sql, {"src": satellite_source, "gran": granularity}).fetchall():
         key = p[0].strftime("%Y-%m-%d") if isinstance(p[0], (date,)) else str(p[0])
         pct_map[key] = [round(float(v), 3) if v is not None else None for v in p[1:]]
 
@@ -319,6 +375,8 @@ def get_overall_time_series(db: Session) -> Dict[str, Any]:
         })
 
     return {
+        "satellite_source": satellite_source,
+        "granularity": granularity,
         "total_records": len(items),
         "series": items,
     }
@@ -414,7 +472,7 @@ def get_wards_rows(db: Session) -> List[tuple]:
 def sync_wards_table(db: Session) -> str:
     """
     Đồng bộ bảng tvdi.wards với danh mục chuẩn 167 phường/xã (gọi khi khởi động máy chủ).
-    Chỉ ghi lại khi nội dung bảng khác danh mục chuẩn.
+    Sử dụng UPSERT để giữ nguyên khóa ngoại và cột ranh giới đa giác (geom_boundary).
     """
     catalog = load_wards_catalog()
     if not catalog:
@@ -438,36 +496,96 @@ def sync_wards_table(db: Session) -> str:
             db.execute(text("""
                 CREATE TABLE IF NOT EXISTS tvdi.wards (
                     ward_id INT PRIMARY KEY,
+                    code INT,
+                    region_id INT REFERENCES tvdi.regions(id) ON DELETE SET NULL,
                     name VARCHAR(255) NOT NULL,
                     district VARCHAR(255) NOT NULL,
                     province VARCHAR(255) NOT NULL,
                     type VARCHAR(50) NOT NULL,
                     lat DOUBLE PRECISION NOT NULL,
                     lon DOUBLE PRECISION NOT NULL,
-                    geom geometry(Point, 4326)
+                    area_km2 DOUBLE PRECISION,
+                    geom geometry(Point, 4326),
+                    geom_boundary geometry(MultiPolygon, 4326)
                 );
             """))
-        has_geom = db.execute(text("""
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'tvdi' AND table_name = 'wards' AND column_name = 'geom'
-        """)).fetchone() is not None
 
-        db.execute(text("TRUNCATE TABLE tvdi.wards;"))
-        if has_geom:
-            insert_sql = """
+        cols = {
+            r[0]
+            for r in db.execute(text("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'tvdi' AND table_name = 'wards'
+            """)).fetchall()
+        }
+        has_geom = "geom" in cols
+        has_extra = "code" in cols and "area_km2" in cols
+
+        if has_geom and has_extra:
+            upsert_sql = """
+                INSERT INTO tvdi.wards (ward_id, code, name, district, province, type, lat, lon, area_km2, geom)
+                VALUES (:ward_id, :code, :name, :district, :province, :type, :lat, :lon, :area_km2,
+                        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
+                ON CONFLICT (ward_id) DO UPDATE SET
+                    code = COALESCE(EXCLUDED.code, tvdi.wards.code),
+                    name = EXCLUDED.name,
+                    district = EXCLUDED.district,
+                    province = EXCLUDED.province,
+                    type = EXCLUDED.type,
+                    lat = EXCLUDED.lat,
+                    lon = EXCLUDED.lon,
+                    area_km2 = COALESCE(EXCLUDED.area_km2, tvdi.wards.area_km2),
+                    geom = EXCLUDED.geom;
+            """
+            params = [
+                {
+                    "ward_id": w["ward_id"],
+                    "code": w.get("code"),
+                    "name": w["name"],
+                    "district": w["district"],
+                    "province": w["province"],
+                    "type": w["type"],
+                    "lat": w["lat"],
+                    "lon": w["lon"],
+                    "area_km2": w.get("area_km2"),
+                }
+                for w in catalog
+            ]
+        elif has_geom:
+            upsert_sql = """
                 INSERT INTO tvdi.wards (ward_id, name, district, province, type, lat, lon, geom)
                 VALUES (:ward_id, :name, :district, :province, :type, :lat, :lon,
                         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
+                ON CONFLICT (ward_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    district = EXCLUDED.district,
+                    province = EXCLUDED.province,
+                    type = EXCLUDED.type,
+                    lat = EXCLUDED.lat,
+                    lon = EXCLUDED.lon,
+                    geom = EXCLUDED.geom;
             """
+            params = [
+                {k: w[k] for k in ("ward_id", "name", "district", "province", "type", "lat", "lon")}
+                for w in catalog
+            ]
         else:
-            insert_sql = """
+            upsert_sql = """
                 INSERT INTO tvdi.wards (ward_id, name, district, province, type, lat, lon)
                 VALUES (:ward_id, :name, :district, :province, :type, :lat, :lon)
+                ON CONFLICT (ward_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    district = EXCLUDED.district,
+                    province = EXCLUDED.province,
+                    type = EXCLUDED.type,
+                    lat = EXCLUDED.lat,
+                    lon = EXCLUDED.lon;
             """
-        db.execute(text(insert_sql), [
-            {k: w[k] for k in ("ward_id", "name", "district", "province", "type", "lat", "lon")}
-            for w in catalog
-        ])
+            params = [
+                {k: w[k] for k in ("ward_id", "name", "district", "province", "type", "lat", "lon")}
+                for w in catalog
+            ]
+
+        db.execute(text(upsert_sql), params)
         db.commit()
         logger.info(f"Đã đồng bộ bảng tvdi.wards với danh mục chuẩn {len(catalog)} phường/xã.")
         return "updated"
@@ -477,9 +595,14 @@ def sync_wards_table(db: Session) -> str:
         return "failed"
 
 
-def get_drought_statistics(db: Session, date_str: str) -> Dict[str, Any]:
+def get_drought_statistics(
+    db: Session,
+    date_str: str,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+) -> Dict[str, Any]:
     """
-    Thống kê phân loại mức khô hạn theo 5 cấp độ cho một mốc ngày.
+    Thống kê phân loại mức khô hạn theo 8 cấp độ cho một mốc ngày.
     Tính toán số ô, tỷ lệ phần trăm và các chỉ số LST, NDVI, TVDI trung bình.
     """
     sql = text("""
@@ -490,9 +613,12 @@ def get_drought_statistics(db: Session, date_str: str) -> Dict[str, Any]:
             g.tvdi
         FROM tvdi.tvdi_grid g
         JOIN tvdi.grid_cells c ON g.cell_id = c.cell_id
-        WHERE g.date = :date AND c.geom_polygon IS NOT NULL;
+        WHERE g.date = :date
+          AND g.satellite_source = :src
+          AND g.granularity = :gran
+          AND c.geom_polygon IS NOT NULL;
     """)
-    rows = db.execute(sql, {"date": date_str}).fetchall()
+    rows = db.execute(sql, {"date": date_str, "src": satellite_source, "gran": granularity}).fetchall()
 
     class_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0}
     lst_values = []
@@ -552,6 +678,8 @@ def get_drought_statistics(db: Session, date_str: str) -> Dict[str, Any]:
 
     return {
         "date": date_str,
+        "satellite_source": satellite_source,
+        "granularity": granularity,
         "total_active_cells": total_valid,
         "avg_lst": round(sum(lst_values) / len(lst_values), 2) if lst_values else None,
         "avg_ndvi": round(sum(ndvi_values) / len(ndvi_values), 3) if ndvi_values else None,
@@ -560,6 +688,41 @@ def get_drought_statistics(db: Session, date_str: str) -> Dict[str, Any]:
         "max_tvdi": round(max(tvdi_values), 3) if tvdi_values else None,
         "classes": classes_summary,
     }
+
+
+def _interpolate_metric_idw(ward_coords: np.ndarray, grid_rows: List[tuple], col_idx: int, decimals: int) -> List[Optional[float]]:
+    """Nội suy IDW độc lập cho từng chỉ số (LST/NDVI/TVDI), trả về None nếu không có dữ liệu."""
+    pts = [
+        (float(g[0]), float(g[1]), float(g[col_idx]))
+        for g in grid_rows
+        if g[col_idx] is not None and np.isfinite(float(g[col_idx]))
+    ]
+    if not pts:
+        return [None] * len(ward_coords)
+
+    coords = np.array([[p[0], p[1]] for p in pts])
+    vals = np.array([p[2] for p in pts])
+    tree = cKDTree(coords)
+    dists, idxs = tree.query(ward_coords, k=min(4, len(coords)))
+    if dists.ndim == 1:
+        dists = dists[:, None]
+        idxs = idxs[:, None]
+    weights = 1.0 / np.maximum(dists, 1e-5) ** 2
+    weights /= weights.sum(axis=1, keepdims=True)
+    interp = np.sum(vals[idxs] * weights, axis=1)
+    return [round(float(v), decimals) for v in interp]
+
+
+def interpolate_wards_from_grid(wards_rows: List[tuple], grid_rows: List[tuple]) -> List[Dict[str, Optional[float]]]:
+    """Nội suy 3 chỉ số LST, NDVI, TVDI từ danh sách điểm lưới sang danh sách phường/xã."""
+    ward_coords = np.array([[float(r[6]), float(r[5])] for r in wards_rows])
+    lst_vals = _interpolate_metric_idw(ward_coords, grid_rows, 2, 2)
+    ndvi_vals = _interpolate_metric_idw(ward_coords, grid_rows, 3, 3)
+    tvdi_vals = _interpolate_metric_idw(ward_coords, grid_rows, 4, 3)
+    return [
+        {"lst_c": lst_vals[i], "ndvi": ndvi_vals[i], "tvdi": tvdi_vals[i]}
+        for i in range(len(wards_rows))
+    ]
 
 
 def get_wards_ranking(
@@ -574,26 +737,29 @@ def get_wards_ranking(
     max_tvdi: Optional[float] = None,
     start_str: Optional[str] = None,
     end_str: Optional[str] = None,
+    satellite_source: str = "LANDSAT",
+    granularity: str = "15day",
+    horizon: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Lập danh sách xếp hạng 167 phường/xã TP.HCM theo chỉ số LST, NDVI, TVDI cho một mốc ngày
     (hoặc giá trị trung bình trong khoảng [start, end] khi tổng hợp theo tháng/năm/giai đoạn).
-    Hỗ trợ sắp xếp theo thứ tự:
-    - LST (cao -> thấp): 'lst_desc'
-    - NDVI (thấp -> cao): 'ndvi_asc'
-    - TVDI (cao -> thấp): 'tvdi_desc'
-    - Tên phường: 'name_asc'
-    Và lọc theo các ngưỡng chỉ số người dùng chọn (ví dụ: LST > 40, TVDI >= 0.6).
+    Đọc trực tiếp từ bảng ward_observations / ward_forecasts nếu có sẵn, hoặc nội suy IDW.
     """
     # 1. Danh mục chuẩn 167 phường/xã (bảng PostGIS tvdi.wards hoặc file JSON)
     wards_rows = get_wards_rows(db)
 
-    empty_result = {"date": date_str, "is_forecast": False, "total_wards": len(wards_rows),
-                    "matching_wards": 0, "sort_by": sort_by, "stats": {}, "wards": []}
+    empty_result = {"date": date_str, "is_forecast": False, "horizon_type": horizon, "is_simulated": False,
+                    "total_wards": len(wards_rows), "matching_wards": 0, "sort_by": sort_by, "stats": {}, "wards": []}
     if not wards_rows:
         return empty_result
 
     is_forecast = False
+    is_simulated = False
+    effective_horizon = horizon
+    precomputed_by_ward: Optional[Dict[int, Dict[str, Optional[float]]]] = None
+    grid_rows: List[tuple] = []
+
     if start_str and end_str:
         # 2a. Giá trị trung bình của từng ô lưới trong khoảng thời gian
         grid_rows = db.execute(text("""
@@ -602,69 +768,150 @@ def get_wards_ranking(
                        AVG(lst_c) AS lst_c, AVG(ndvi) AS ndvi, AVG(tvdi) AS tvdi
                 FROM tvdi.tvdi_grid
                 WHERE date BETWEEN :s AND :e
+                  AND satellite_source = :src
+                  AND granularity = :gran
                 GROUP BY cell_id
             ) agg
-            WHERE lst_c IS NOT NULL AND tvdi IS NOT NULL
-        """), {"s": start_str, "e": end_str}).fetchall()
+            WHERE tvdi IS NOT NULL OR lst_c IS NOT NULL
+        """), {"s": start_str, "e": end_str, "src": satellite_source, "gran": granularity}).fetchall()
     else:
-        # 2b. Lấy dữ liệu điểm lưới viễn thám thực tế hoặc AI dự báo
-        grid_rows = db.execute(text("""
-            SELECT lon, lat, lst_c, ndvi, tvdi
-            FROM tvdi.tvdi_grid
-            WHERE date = :d AND lst_c IS NOT NULL AND tvdi IS NOT NULL
-        """), {"d": date_str}).fetchall()
+        # 2b-1. Ưu tiên đọc từ bảng chuẩn tvdi.ward_observations nếu đã có đủ 167 phường
+        try:
+            obs_rows = db.execute(text("""
+                SELECT ward_id, lst_c, ndvi, tvdi
+                FROM tvdi.ward_observations
+                WHERE date = :d
+                  AND satellite_source = :src
+                  AND granularity = :gran
+            """), {"d": date_str, "src": satellite_source, "gran": granularity}).fetchall()
+            if len(obs_rows) >= len(wards_rows):
+                precomputed_by_ward = {
+                    int(r[0]): {
+                        "lst_c": round(float(r[1]), 2) if r[1] is not None else None,
+                        "ndvi": round(float(r[2]), 3) if r[2] is not None else None,
+                        "tvdi": round(float(r[3]), 3) if r[3] is not None else None,
+                    }
+                    for r in obs_rows
+                }
+        except Exception:
+            db.rollback()
+            precomputed_by_ward = None
 
-    if not grid_rows and not (start_str and end_str):
-        # Thử lấy từ tvdi_forecast (dự báo tương lai hoặc ngày hiện tại)
-        grid_rows = db.execute(text("""
-            SELECT c.lon, c.lat,
-                   COALESCE(28.0 + f.tvdi_pred * 14.0, 32.0) as lst_c,
-                   COALESCE(0.55 - f.tvdi_pred * 0.3, 0.40) as ndvi,
-                   f.tvdi_pred as tvdi
-            FROM tvdi.tvdi_forecast f
-            JOIN tvdi.grid_cells c ON f.cell_id = c.cell_id
-            WHERE f.date = :d AND f.tvdi_pred IS NOT NULL
-        """), {"d": date_str}).fetchall()
-        is_forecast = True
+        if precomputed_by_ward is None:
+            # 2b-2. Lấy dữ liệu điểm lưới hiện trạng thực tế
+            grid_rows = db.execute(text("""
+                SELECT lon, lat, lst_c, ndvi, tvdi
+                FROM tvdi.tvdi_grid
+                WHERE date = :d
+                  AND satellite_source = :src
+                  AND granularity = :gran
+                  AND (tvdi IS NOT NULL OR lst_c IS NOT NULL OR ndvi IS NOT NULL)
+            """), {"d": date_str, "src": satellite_source, "gran": granularity}).fetchall()
 
-    if not grid_rows:
-        # Nếu vẫn không có, lấy ngày gần nhất trong tvdi_grid
+    if precomputed_by_ward is None and not grid_rows and not (start_str and end_str):
+        # 2c-1. Ưu tiên đọc từ tvdi.ward_forecasts theo horizon nếu đã có sẵn
+        if not effective_horizon:
+            avail_h = [
+                r[0]
+                for r in db.execute(
+                    text("""
+                        SELECT DISTINCT horizon_type FROM tvdi.tvdi_forecast
+                        WHERE date = :d AND satellite_source = :src AND cell_id IS NOT NULL
+                    """),
+                    {"d": date_str, "src": satellite_source},
+                ).fetchall()
+            ]
+            for cand in ("daily_7d", "monthly_12m", "15day", "test_eval"):
+                if cand in avail_h:
+                    effective_horizon = cand
+                    break
+
+        if effective_horizon:
+            try:
+                wf_rows = db.execute(
+                    text("""
+                        SELECT ward_id, lst_pred, ndvi_pred, tvdi_pred, is_simulated
+                        FROM tvdi.ward_forecasts
+                        WHERE target_date = :d
+                          AND horizon_type = :h
+                          AND satellite_source = :src
+                    """),
+                    {"d": date_str, "h": effective_horizon, "src": satellite_source},
+                ).fetchall()
+                if len(wf_rows) >= len(wards_rows):
+                    is_forecast = True
+                    is_simulated = bool(wf_rows[0][4])
+                    precomputed_by_ward = {
+                        int(r[0]): {
+                            "lst_c": round(float(r[1]), 2) if r[1] is not None else None,
+                            "ndvi": round(float(r[2]), 3) if r[2] is not None else None,
+                            "tvdi": round(float(r[3]), 3) if r[3] is not None else None,
+                        }
+                        for r in wf_rows
+                    }
+            except Exception:
+                db.rollback()
+
+        if precomputed_by_ward is None:
+            # 2c-2. Đọc trực tiếp 3 cột lst_pred, ndvi_pred, tvdi_pred từ tvdi_forecast
+            f_sql = """
+                SELECT c.lon, c.lat,
+                       f.lst_pred AS lst_c,
+                       f.ndvi_pred AS ndvi,
+                       f.tvdi_pred AS tvdi,
+                       f.is_simulated
+                FROM tvdi.tvdi_forecast f
+                JOIN tvdi.grid_cells c ON f.cell_id = c.cell_id
+                WHERE f.date = :d
+                  AND f.satellite_source = :src
+                  {h_filter}
+                  AND (f.tvdi_pred IS NOT NULL OR f.lst_pred IS NOT NULL OR f.ndvi_pred IS NOT NULL)
+            """
+            params = {"d": date_str, "src": satellite_source}
+            if effective_horizon:
+                f_sql = f_sql.format(h_filter="AND f.horizon_type = :h")
+                params["h"] = effective_horizon
+            else:
+                f_sql = f_sql.format(h_filter="")
+            f_rows = db.execute(text(f_sql), params).fetchall()
+            if f_rows:
+                is_forecast = True
+                is_simulated = bool(f_rows[0][5])
+                grid_rows = [r[:5] for r in f_rows]
+
+    if precomputed_by_ward is None and not grid_rows:
+        # 2d. Nếu vẫn không có, lấy ngày hiện trạng gần nhất trong tvdi_grid
         closest = db.execute(text("""
             SELECT date FROM tvdi.tvdi_series
+            WHERE satellite_source = :src AND granularity = :gran
             ORDER BY ABS(date - CAST(:d AS date)) ASC
             LIMIT 1
-        """), {"d": start_str or date_str}).fetchone()
+        """), {"d": start_str or date_str, "src": satellite_source, "gran": granularity}).fetchone()
         if closest:
             c_date = closest[0].strftime("%Y-%m-%d")
             grid_rows = db.execute(text("""
                 SELECT lon, lat, lst_c, ndvi, tvdi
                 FROM tvdi.tvdi_grid
-                WHERE date = :d AND lst_c IS NOT NULL AND tvdi IS NOT NULL
-            """), {"d": c_date}).fetchall()
+                WHERE date = :d
+                  AND satellite_source = :src
+                  AND granularity = :gran
+                  AND (tvdi IS NOT NULL OR lst_c IS NOT NULL OR ndvi IS NOT NULL)
+            """), {"d": c_date, "src": satellite_source, "gran": granularity}).fetchall()
             is_forecast = False
 
-    # Loại các giá trị NaN (không hợp lệ cho nội suy và chuẩn JSON)
-    grid_rows = [g for g in grid_rows if g[4] is not None and np.isfinite(float(g[4]))]
-    if not grid_rows:
-        return empty_result
-
-    # 3. Nội suy không gian IDW cho từng phường
-    ward_coords = np.array([[float(r[6]), float(r[5])] for r in wards_rows])  # lon, lat
-    grid_coords = np.array([[float(g[0]), float(g[1])] for g in grid_rows])
-    grid_vals = np.array([
-        [
-            float(g[2]) if g[2] is not None else 32.0,
-            float(g[3]) if g[3] is not None else 0.45,
-            float(g[4]) if g[4] is not None else 0.50,
+    if precomputed_by_ward is None:
+        grid_rows = [
+            g for g in grid_rows
+            if any(g[idx] is not None and np.isfinite(float(g[idx])) for idx in (2, 3, 4))
         ]
-        for g in grid_rows
-    ])
-
-    tree = cKDTree(grid_coords)
-    dists, idxs = tree.query(ward_coords, k=min(4, len(grid_coords)))
-    weights = 1.0 / np.maximum(dists, 1e-5) ** 2
-    weights /= weights.sum(axis=1, keepdims=True)
-    interp_vals = np.sum(grid_vals[idxs] * weights[:, :, None], axis=1)
+        if not grid_rows:
+            return empty_result
+        interp_list = interpolate_wards_from_grid(wards_rows, grid_rows)
+    else:
+        interp_list = [
+            precomputed_by_ward.get(w[0], {"lst_c": None, "ndvi": None, "tvdi": None})
+            for w in wards_rows
+        ]
 
     all_wards = []
     for i, w in enumerate(wards_rows):
@@ -675,9 +922,10 @@ def get_wards_ranking(
         w_type = w[4]
         lat = float(w[5])
         lon = float(w[6])
-        lst_val = round(float(interp_vals[i, 0]), 2)
-        ndvi_val = round(float(interp_vals[i, 1]), 3)
-        tvdi_val = round(float(interp_vals[i, 2]), 3)
+        vals = interp_list[i]
+        lst_val = vals["lst_c"]
+        ndvi_val = vals["ndvi"]
+        tvdi_val = vals["tvdi"]
 
         dclass = get_drought_class(tvdi_val)
 
@@ -698,41 +946,40 @@ def get_wards_ranking(
             "color": dclass["color"],
         })
 
-    # 4. Áp dụng bộ lọc ngưỡng (Threshold filtering)
+    # 4. Áp dụng bộ lọc ngưỡng (an toàn với giá trị None)
     filtered = []
     for w in all_wards:
-        if min_lst is not None and w["lst_c"] < min_lst:
+        if min_lst is not None and (w["lst_c"] is None or w["lst_c"] < min_lst):
             continue
-        if max_lst is not None and w["lst_c"] > max_lst:
+        if max_lst is not None and (w["lst_c"] is None or w["lst_c"] > max_lst):
             continue
-        if min_ndvi is not None and w["ndvi"] < min_ndvi:
+        if min_ndvi is not None and (w["ndvi"] is None or w["ndvi"] < min_ndvi):
             continue
-        if max_ndvi is not None and w["ndvi"] > max_ndvi:
+        if max_ndvi is not None and (w["ndvi"] is None or w["ndvi"] > max_ndvi):
             continue
-        if min_tvdi is not None and w["tvdi"] < min_tvdi:
+        if min_tvdi is not None and (w["tvdi"] is None or w["tvdi"] < min_tvdi):
             continue
-        if max_tvdi is not None and w["tvdi"] > max_tvdi:
+        if max_tvdi is not None and (w["tvdi"] is None or w["tvdi"] > max_tvdi):
             continue
         filtered.append(w)
 
-    # 5. Sắp xếp danh sách theo tiêu chí
-    # Yêu cầu 1: LST (cao -> thấp), NDVI (thấp -> cao), TVDI (cao -> thấp)
+    # 5. Sắp xếp danh sách theo tiêu chí (đưa None xuống cuối)
     if sort_by == "lst_desc":
-        filtered.sort(key=lambda x: (x["lst_c"] if x["lst_c"] is not None else -999), reverse=True)
+        filtered.sort(key=lambda x: (x["lst_c"] is not None, x["lst_c"] if x["lst_c"] is not None else -999), reverse=True)
     elif sort_by == "ndvi_asc":
-        filtered.sort(key=lambda x: (x["ndvi"] if x["ndvi"] is not None else 999), reverse=False)
+        filtered.sort(key=lambda x: (x["ndvi"] is None, x["ndvi"] if x["ndvi"] is not None else 999))
     elif sort_by == "tvdi_desc":
-        filtered.sort(key=lambda x: (x["tvdi"] if x["tvdi"] is not None else -999), reverse=True)
+        filtered.sort(key=lambda x: (x["tvdi"] is not None, x["tvdi"] if x["tvdi"] is not None else -999), reverse=True)
     elif sort_by == "lst_asc":
-        filtered.sort(key=lambda x: (x["lst_c"] if x["lst_c"] is not None else 999), reverse=False)
+        filtered.sort(key=lambda x: (x["lst_c"] is None, x["lst_c"] if x["lst_c"] is not None else 999))
     elif sort_by == "ndvi_desc":
-        filtered.sort(key=lambda x: (x["ndvi"] if x["ndvi"] is not None else -999), reverse=True)
+        filtered.sort(key=lambda x: (x["ndvi"] is not None, x["ndvi"] if x["ndvi"] is not None else -999), reverse=True)
     elif sort_by == "tvdi_asc":
-        filtered.sort(key=lambda x: (x["tvdi"] if x["tvdi"] is not None else 999), reverse=False)
+        filtered.sort(key=lambda x: (x["tvdi"] is None, x["tvdi"] if x["tvdi"] is not None else 999))
     elif sort_by == "name_asc":
         filtered.sort(key=lambda x: x["name"])
     else:
-        filtered.sort(key=lambda x: x["tvdi"], reverse=True)
+        filtered.sort(key=lambda x: (x["tvdi"] is not None, x["tvdi"] if x["tvdi"] is not None else -999), reverse=True)
 
     # Gán số thứ tự xếp hạng (#Rank)
     for rank, w in enumerate(filtered, start=1):
@@ -751,14 +998,18 @@ def get_wards_ranking(
         "avg_tvdi": round(float(np.mean(tvdi_arr)), 3) if tvdi_arr else None,
         "max_tvdi": round(float(np.max(tvdi_arr)), 3) if tvdi_arr else None,
         "min_tvdi": round(float(np.min(tvdi_arr)), 3) if tvdi_arr else None,
-        "severe_drought_count": sum(1 for w in filtered if w["tvdi"] >= 0.625),
+        "severe_drought_count": sum(1 for w in filtered if w["tvdi"] is not None and w["tvdi"] >= 0.625),
     }
 
     return {
         "date": date_str,
         "start": start_str,
         "end": end_str,
+        "satellite_source": satellite_source,
+        "granularity": granularity,
         "is_forecast": is_forecast,
+        "horizon_type": effective_horizon if is_forecast else None,
+        "is_simulated": is_simulated if is_forecast else False,
         "total_wards": len(all_wards),
         "matching_wards": len(filtered),
         "sort_by": sort_by,

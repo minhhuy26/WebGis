@@ -1,20 +1,23 @@
 """
 FastAPI application – entry point.
 """
+import threading
+from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
+from sqlalchemy import text
 
 from .config import settings
-from .database import check_connection
-from .routers import tvdi, stats, gee, prediction, auth
+from .database import SessionLocal, check_connection, engine
+from .routers import tvdi, stats, gee, prediction, auth, bulletins
 
 # ---- Tạo ứng dụng FastAPI -------------------------------------------------
 app = FastAPI(
-    title="WebGIS TVDI – TP. Hồ Chí Minh",
-    description="Hệ thống WebGIS hiển thị và phân tích chỉ số khô hạn TVDI",
+    title="Hệ thống Giám sát Mức độ Khô hạn tại TP.HCM",
+    description="Hệ thống WebGIS giám sát và dự báo mức độ khô hạn (TVDI, LST, NDVI) tại TP. Hồ Chí Minh",
     version="2.0.0",
 )
 
@@ -34,6 +37,7 @@ app.include_router(stats.router, prefix="/api", tags=["Thống kê"])
 app.include_router(prediction.router)
 app.include_router(gee.router)
 app.include_router(auth.router)
+app.include_router(bulletins.router)
 
 # ---- Phục vụ frontend (static files) ---------------------------------------
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
@@ -61,12 +65,87 @@ async def health_check():
     }
 
 
+def _ensure_standard_schema_fast() -> bool:
+    """Đảm bảo schema chuẩn (14 bảng + cột mới) tồn tại trên CSDL cloud trước khi phục vụ request."""
+    try:
+        with engine.connect() as conn:
+            has_col = conn.execute(text("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'tvdi'
+                  AND table_name = 'tvdi_forecast'
+                  AND column_name = 'horizon_type'
+            """)).fetchone() is not None
+            has_bul = conn.execute(text("""
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'tvdi' AND table_name = 'bulletins'
+            """)).fetchone() is not None
+            has_wf = conn.execute(text("""
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'tvdi' AND table_name = 'ward_forecasts'
+            """)).fetchone() is not None
+            if has_col and has_bul and has_wf:
+                return False
+
+        from ..scripts import migrate_schema_standard as mig
+        mig.step_create_new_tables()
+        mig.step_alter_existing_tables()
+        mig.step_constraints_and_indexes()
+        print("[STARTUP] Đã tự động nâng cấp cấu trúc bảng/cột chuẩn trong schema tvdi.")
+        return True
+    except Exception as e:
+        print(f"[STARTUP] Lỗi kiểm tra nâng cấp schema tự động: {e}")
+        return False
+
+
+def _ensure_cloud_data_background():
+    """Đồng bộ dữ liệu nền còn thiếu (dự báo 7 ngày, 12 tháng, ranh giới phường) ở luồng nền."""
+    try:
+        from ..scripts import migrate_schema_standard as mig
+        from ..scripts.train_monthly_forecast import (
+            generate_daily_7d_simulated,
+            train_and_populate_monthly_12m,
+        )
+
+        with engine.connect() as conn:
+            dclass_cnt = conn.execute(text("SELECT COUNT(*) FROM tvdi.drought_classes")).scalar() or 0
+            poly_cnt = conn.execute(text("SELECT COUNT(*) FROM tvdi.wards WHERE geom_boundary IS NOT NULL")).scalar() or 0
+            obs_cnt = conn.execute(text("SELECT COUNT(*) FROM tvdi.ward_observations")).scalar() or 0
+
+        if dclass_cnt < 8 or poly_cnt < 167:
+            mig.step_seed_reference_and_spatial()
+            mig.step_backfill_series_stats()
+
+        if obs_cnt == 0:
+            mig.step_backfill_ward_observations()
+
+        today_dt = date.today()
+        m0 = date(today_dt.year, today_dt.month, 1)
+        with engine.connect() as conn:
+            d7_cnt = conn.execute(
+                text("SELECT COUNT(DISTINCT date) FROM tvdi.tvdi_forecast WHERE horizon_type = 'daily_7d' AND date >= :d0"),
+                {"d0": today_dt},
+            ).scalar() or 0
+            m12_cnt = conn.execute(
+                text("SELECT COUNT(DISTINCT date) FROM tvdi.tvdi_forecast WHERE horizon_type = 'monthly_12m' AND date >= :m0"),
+                {"m0": m0},
+            ).scalar() or 0
+
+        if d7_cnt < 7:
+            generate_daily_7d_simulated(today_dt)
+            print("[STARTUP-BG] Đã sinh xong dữ liệu dự báo 7 ngày (daily_7d).")
+        if m12_cnt < 12:
+            train_and_populate_monthly_12m(m0)
+            print("[STARTUP-BG] Đã huấn luyện & nạp xong dữ liệu dự báo 12 tháng (monthly_12m).")
+    except Exception as e:
+        print(f"[STARTUP-BG] Bỏ qua đồng bộ dữ liệu nền: {e}")
+
+
 @app.on_event("startup")
 def startup_event():
-    """Khởi tạo trước kết nối Google Earth Engine và đồng bộ danh mục 167 phường/xã khi khởi động server."""
+    """Khởi tạo cấu trúc DB chuẩn, GEE và đồng bộ danh mục 167 phường/xã khi khởi động server."""
     from .services import gee_service, tvdi_service
-    from .database import SessionLocal
 
+    _ensure_standard_schema_fast()
     gee_service.init_earth_engine()
 
     try:
@@ -78,3 +157,5 @@ def startup_event():
             db.close()
     except Exception as e:
         print(f"[STARTUP] Bỏ qua đồng bộ danh mục phường/xã: {e}")
+
+    threading.Thread(target=_ensure_cloud_data_background, daemon=True).start()

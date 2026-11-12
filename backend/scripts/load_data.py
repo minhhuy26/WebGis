@@ -46,13 +46,22 @@ def load_series_csv():
     raw_conn = engine.raw_connection()
     try:
         with raw_conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE tvdi.tvdi_series RESTART IDENTITY")
+            cur.execute("DELETE FROM tvdi.tvdi_series WHERE satellite_source = 'LANDSAT' AND granularity = '15day'")
             sql = """
                 INSERT INTO tvdi.tvdi_series
-                (date, lst_c, ndvi, tvdi, n_img, dry_a, dry_b, ts_min, fit_ok)
+                (date, lst_c, ndvi, tvdi, n_img, dry_a, dry_b, ts_min, fit_ok, satellite_source, granularity)
                 VALUES %s
+                ON CONFLICT (date, satellite_source, granularity) DO UPDATE SET
+                    lst_c = EXCLUDED.lst_c,
+                    ndvi = EXCLUDED.ndvi,
+                    tvdi = EXCLUDED.tvdi,
+                    n_img = EXCLUDED.n_img,
+                    dry_a = EXCLUDED.dry_a,
+                    dry_b = EXCLUDED.dry_b,
+                    ts_min = EXCLUDED.ts_min,
+                    fit_ok = EXCLUDED.fit_ok
             """
-            execute_values(cur, sql, records, template="(%s, %s, %s, %s, %s, %s, %s, %s, %s)", page_size=1000)
+            execute_values(cur, sql, records, template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, 'LANDSAT', '15day')", page_size=1000)
         raw_conn.commit()
         print(f"  [OK] Đã nạp thành công {len(records):,} dòng vào tvdi.tvdi_series")
     finally:
@@ -90,17 +99,22 @@ def load_grid_csv():
     raw_conn = engine.raw_connection()
     try:
         with raw_conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE tvdi.tvdi_grid RESTART IDENTITY")
+            cur.execute("DELETE FROM tvdi.tvdi_grid WHERE satellite_source = 'LANDSAT' AND granularity = '15day'")
             sql = """
                 INSERT INTO tvdi.tvdi_grid
-                (date, cell_id, lon, lat, lst_c, ndvi, tvdi, n_img, geom)
+                (date, cell_id, lon, lat, lst_c, ndvi, tvdi, n_img, geom, satellite_source, granularity)
                 VALUES %s
+                ON CONFLICT (date, cell_id, satellite_source, granularity) DO UPDATE SET
+                    lst_c = EXCLUDED.lst_c,
+                    ndvi = EXCLUDED.ndvi,
+                    tvdi = EXCLUDED.tvdi,
+                    n_img = EXCLUDED.n_img
             """
             execute_values(
                 cur,
                 sql,
                 records,
-                template="(%s, %s, %s, %s, %s, %s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326))",
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), 'LANDSAT', '15day')",
                 page_size=5000,
             )
         raw_conn.commit()
@@ -123,15 +137,17 @@ def load_shapefile():
     raw_conn = engine.raw_connection()
     try:
         with raw_conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE tvdi.regions RESTART IDENTITY")
+            cur.execute("DELETE FROM tvdi.regions")
+            cur.execute("ALTER SEQUENCE tvdi.regions_id_seq RESTART WITH 1")
             for _, row in gdf.iterrows():
                 wkt = row.geometry.wkt
                 cur.execute(
                     """
-                    INSERT INTO tvdi.regions (ten, sap_nhap, quy_mo, dt_km2, geom)
-                    VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326))
+                    INSERT INTO tvdi.regions (code, ten, sap_nhap, quy_mo, dt_km2, geom)
+                    VALUES (%s, %s, %s, %s, %s, ST_GeomFromText(%s, 4326))
                     """,
                     (
+                        "TPHCM_MO_RONG",
                         row.get("ten", ""),
                         row.get("sap_nhap", ""),
                         row.get("quy_mo", ""),

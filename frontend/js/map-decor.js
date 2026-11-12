@@ -143,6 +143,7 @@ function setupMapDecorations() {
                     <button type="button" data-tool="zoomout" title="Thu nhỏ"><i class="fa-solid fa-minus"></i></button>
                 </div>
                 <div class="map-tools-stack">
+                    <button type="button" data-tool="compose" title="Thành lập & Export Bản đồ chuyên đề PNG/PDF"><i class="fa-solid fa-map"></i></button>
                     <button type="button" data-tool="fullscreen" title="Toàn màn hình"><i class="fa-solid fa-expand"></i></button>
                     <button type="button" data-tool="info" title="Thông tin dữ liệu bản đồ"><i class="fa-solid fa-circle-info"></i></button>
                 </div>`;
@@ -223,6 +224,10 @@ function handleMapTool(tool, btn) {
             }
             break;
         }
+        case 'compose': {
+            if (typeof openMapComposerModal === 'function') openMapComposerModal();
+            break;
+        }
         case 'info': {
             const panel = document.getElementById('map-info-panel');
             if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
@@ -290,8 +295,18 @@ function updateGraticule() {
 function describeCurrentView(short = false) {
     const v = state.currentView;
     if (!v) return '--';
+    const isAdmin = (typeof isAdminUser === 'function') ? isAdminUser() : false;
     if (v.kind === 'forecast') {
-        return short ? `Dự báo ${formatDateVN(v.date)}` : `Dự báo AI ngày ${formatDateVN(v.date)}`;
+        if (v.horizon === 'monthly_12m') {
+            const mm = `${v.date.substring(5, 7)}/${v.date.substring(0, 4)}`;
+            if (!isAdmin) return short ? `Tháng ${mm}` : `Dự báo tháng ${mm}`;
+            return short ? `Dự báo T${mm}` : `Dự báo AI tháng ${mm} (12 tháng · Landsat)`;
+        }
+        if (v.horizon === 'daily_7d' || v.isSimulated) {
+            if (!isAdmin) return short ? `Ngày ${formatDateVN(v.date)}` : `Dự báo ngày ${formatDateVN(v.date)}`;
+            return short ? `Giả lập ${formatDateVN(v.date)}` : `Dự báo ngày ${formatDateVN(v.date)} (Giả lập 7 ngày · Landsat)`;
+        }
+        return short ? `Dự báo ${formatDateVN(v.date)}` : (isAdmin ? `Dự báo AI ngày ${formatDateVN(v.date)}` : `Dự báo ngày ${formatDateVN(v.date)}`);
     }
     if (v.kind === 'aggregate') {
         const n = v.nDates || 0;
@@ -322,7 +337,7 @@ function updateMapTitle() {
     const isForecast = v && v.kind === 'forecast';
 
     mainEl.innerText = isForecast
-        ? 'BẢN ĐỒ DỰ BÁO KHÔ HẠN (TVDI) TP. HỒ CHÍ MINH'
+        ? (key === 'tvdi' ? 'BẢN ĐỒ DỰ BÁO KHÔ HẠN (TVDI) TP. HỒ CHÍ MINH' : `BẢN ĐỒ DỰ BÁO ${meta.label} TP. HỒ CHÍ MINH`)
         : `${meta.mapTitle} TP. HỒ CHÍ MINH`;
 
     if (!v) {
@@ -330,17 +345,22 @@ function updateMapTitle() {
         return;
     }
 
-    let source;
-    if (state.displayMode === 'ward') {
-        source = 'giá trị trung bình 167 phường/xã';
-    } else if (state.rasterSource === 'pixel' && typeof pixelRaster !== 'undefined' && pixelRaster.field) {
-        source = pixelRaster.field.label;
-    } else if (state.rasterSource === 'gee') {
-        source = 'ảnh Landsat 30 m (Google Earth Engine)';
-    } else {
-        source = 'nội suy lưới ~5,5 km';
+    const isAdmin = (typeof isAdminUser === 'function') ? isAdminUser() : false;
+    let source = '';
+    if (isAdmin) {
+        if (state.displayMode === 'ward') {
+            source = ' · giá trị trung bình 167 phường/xã';
+        } else if (state.rasterSource === 'pixel' && typeof pixelRaster !== 'undefined' && pixelRaster.field) {
+            source = ` · ${pixelRaster.field.label}`;
+        } else if (state.rasterSource === 'gee') {
+            source = ' · ảnh Landsat 30 m (Google Earth Engine)';
+        } else {
+            source = ' · nội suy lưới ~5,5 km';
+        }
+    } else if (state.displayMode === 'ward') {
+        source = ' · 167 phường/xã';
     }
-    subEl.innerHTML = `<strong>${describeCurrentView(false)}</strong> · ${source}${state.viewMode === '3d' ? ' <span class="title-3d-tag">3D</span>' : ''}`;
+    subEl.innerHTML = `<strong>${describeCurrentView(false)}</strong>${source}${state.viewMode === '3d' ? ' <span class="title-3d-tag">3D</span>' : ''}`;
 }
 
 // --- 5. Chú giải: thang màu liên tục + bảng phân cấp chi tiết ---
