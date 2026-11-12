@@ -44,7 +44,7 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
-@app.get("/", include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 async def serve_index():
     """Trả về trang chủ (index.html)."""
     return FileResponse(str(FRONTEND_DIR / "index.html"))

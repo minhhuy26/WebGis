@@ -223,18 +223,22 @@ def step_constraints_and_indexes():
     """, "dedup tvdi_grid")
 
     with engine.begin() as conn:
-        if _constraint_exists(conn, "tvdi_series_date_key"):
-            conn.execute(text("ALTER TABLE tvdi.tvdi_series DROP CONSTRAINT tvdi_series_date_key;"))
-        if not _constraint_exists(conn, "uq_tvdi_series_obs"):
-            _run_ddl_safe(
-                "ALTER TABLE tvdi.tvdi_series ADD CONSTRAINT uq_tvdi_series_obs UNIQUE (date, satellite_source, granularity);",
-                "uq_tvdi_series_obs",
-            )
-        if not _constraint_exists(conn, "uq_tvdi_grid_obs"):
-            _run_ddl_safe(
-                "ALTER TABLE tvdi.tvdi_grid ADD CONSTRAINT uq_tvdi_grid_obs UNIQUE (date, cell_id, satellite_source, granularity);",
-                "uq_tvdi_grid_obs",
-            )
+        drop_old_series_uk = _constraint_exists(conn, "tvdi_series_date_key")
+        need_series_uk = not _constraint_exists(conn, "uq_tvdi_series_obs")
+        need_grid_uk = not _constraint_exists(conn, "uq_tvdi_grid_obs")
+
+    if drop_old_series_uk:
+        _run_ddl_safe("ALTER TABLE tvdi.tvdi_series DROP CONSTRAINT IF EXISTS tvdi_series_date_key;", "drop tvdi_series_date_key")
+    if need_series_uk:
+        _run_ddl_safe(
+            "ALTER TABLE tvdi.tvdi_series ADD CONSTRAINT uq_tvdi_series_obs UNIQUE (date, satellite_source, granularity);",
+            "uq_tvdi_series_obs",
+        )
+    if need_grid_uk:
+        _run_ddl_safe(
+            "ALTER TABLE tvdi.tvdi_grid ADD CONSTRAINT uq_tvdi_grid_obs UNIQUE (date, cell_id, satellite_source, granularity);",
+            "uq_tvdi_grid_obs",
+        )
 
     _run_ddl_safe("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_tvdi_forecast_target
