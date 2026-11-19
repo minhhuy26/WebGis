@@ -1,0 +1,18 @@
+{
+  "outputDirectory": "frontend",
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://webgis-aqxd.onrender.com/api/$1"
+    },
+    {
+      "source": "/health",
+      "destination": "https://webgis-aqxd.onrender.com/health"
+    },
+    {
+      "source": "/static/(.*)",
+      "destination": "/$1"
+    }
+  ]
+}

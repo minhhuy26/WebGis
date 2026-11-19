@@ -1795,7 +1795,23 @@ function renderPointDetail(lat, lon, tvdiVal, theme, locationName, values = null
                 ${theme.desc}
             </div>
         </div>
+
+        <button type="button" id="btn-ward-tree-scenario-action" class="btn-ward-tree-action" title="Tính toán lợi ích trồng cây và mô phỏng hạ nhiệt cho khu vực này">
+            <i class="fa-solid fa-tree"></i> Kịch bản trồng cây cho khu vực này
+        </button>
     `;
+
+    const btnTree = document.getElementById('btn-ward-tree-scenario-action');
+    if (btnTree) {
+        btnTree.addEventListener('click', () => {
+            const ward = (state.wards.list || []).find(w => w.ward_id === state.wards.selectedWardId)
+                || (state.wards.allList || []).find(w => w.ward_id === state.wards.selectedWardId)
+                || { name: locationName, lat, lon, ndvi: ndviVal, tvdi: tvdiVal, lst_c: lstVal, area_km2: 2.5 };
+            if (window.TreeBenefitModule && typeof window.TreeBenefitModule.openModal === 'function') {
+                window.TreeBenefitModule.openModal(ward);
+            }
+        });
+    }
 }
 
 function renderSelectedCell(props, clickInfo = null) {

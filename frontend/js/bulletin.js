@@ -640,6 +640,22 @@ function renderBulletinPaperFromDraft(draft) {
                 <p style="margin:4px 0 0 0;">${_escapeHtml(displayRecommendations)}</p>
             </div>
         </div>
+
+        <!-- Khối VI: Đề xuất kịch bản phủ xanh cây xanh & Lợi ích sinh thái - kinh tế -->
+        <div class="rep-section">
+            <div class="rep-sec-title">VI. Đề xuất kịch bản phủ xanh cây xanh &amp; Lợi ích sinh thái - kinh tế</div>
+            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 12px 14px; font-size: 0.85rem; color: #166534; line-height: 1.5;">
+                <div style="font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+                    <span><i class="fa-solid fa-tree"></i> Mô phỏng trồng 1.000 cây xanh đô thị (chu kỳ 10 năm):</span>
+                    <button type="button" class="btn-matrix-apply no-print" onclick="if(window.TreeBenefitModule) window.TreeBenefitModule.openModal();" style="padding: 4px 10px; font-size: 0.75rem;">
+                        <i class="fa-solid fa-up-right-from-square"></i> Mở công cụ tính chi tiết
+                    </button>
+                </div>
+                <div>
+                    Ước tính hấp thụ <strong>200,00 tấn CO₂</strong>, tạo ra <strong>145,45 tấn O₂</strong>, tích lũy <strong>120.000 kg sinh khối</strong>, tạo <strong>15.000 m² bóng mát</strong>, giữ lại <strong>3.000 m³ nước mưa</strong>. Tổng lợi ích kinh tế quy đổi đạt <strong>210.000.000 đ</strong> (tín chỉ carbon, sinh khối, giảm quá tải thoát nước).
+                </div>
+            </div>
+        </div>
     `;
 }
 

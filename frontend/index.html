@@ -40,6 +40,10 @@
                 <i class="fa-solid fa-newspaper"></i>
                 <span>Bản tin</span>
             </button>
+            <button id="btn-open-tree-benefit" class="btn btn-header-ghost btn-header-highlight" title="Tính toán lợi ích trồng cây xanh & Lựa chọn kịch bản sinh thái - kinh tế">
+                <i class="fa-solid fa-tree" style="color: #16a34a;"></i>
+                <span>Lợi ích trồng cây</span>
+            </button>
 
             <!-- Menu người dùng với Cài đặt & Đăng xuất (Chỉ hiển thị khi đã đăng nhập) -->
             <div class="user-menu-wrapper" id="user-menu-wrapper" style="display: none;">
@@ -1091,6 +1095,501 @@
     </div>
     <div id="mc-print-sheet" aria-hidden="true"></div>
 
+    <!-- Modal: Tính Lợi Ích Trồng Cây Xanh & Kịch Bản Đô Thị -->
+    <div id="tree-benefit-modal" class="modal-backdrop" style="display: none; z-index: 10005;">
+        <div class="modal-dialog tree-benefit-dialog">
+            <div class="modal-header tb-modal-header">
+                <div class="tb-header-title-box">
+                    <div class="tb-header-icon"><i class="fa-solid fa-tree"></i></div>
+                    <div>
+                        <h3 class="tb-header-title">Tính Lợi Ích Trồng Cây Xanh &amp; Kịch Bản Đô Thị</h3>
+                        <div class="tb-header-sub">Mô phỏng định lượng hấp thụ CO₂, tạo Oxy, sinh khối, bóng mát, trữ nước mưa &amp; định giá kinh tế sinh thái</div>
+                    </div>
+                </div>
+                <button class="tb-close-btn" id="btn-close-tb-modal" title="Đóng">&times;</button>
+            </div>
+
+            <div class="modal-body tb-modal-body">
+                <!-- CỘT TRÁI: Nhập thông số & Kết quả tính toán -->
+                <div class="tb-col-left">
+                    <!-- Khung Nhập thông số -->
+                    <div class="tb-card">
+                        <div class="tb-card-header">
+                            <h4><i class="fa-solid fa-sliders" style="color: #16a34a;"></i> Tính lợi ích trồng cây xanh</h4>
+                            <span class="tb-scenario-badge is-preset" id="tb-scenario-badge">Tiêu chuẩn</span>
+                        </div>
+                        <div class="tb-card-body">
+                            <!-- Chọn kịch bản -->
+                            <div class="tb-scenario-control">
+                                <label style="font-size: 0.78rem; font-weight: 700; color: #334155;">Kịch bản tính toán:</label>
+                                <select id="tb-scenario-select" class="tb-select" title="Chọn kịch bản trồng cây">
+                                    <option value="tong_hop" selected>Tổng hợp tất cả lợi ích (Tiêu chuẩn tham khảo)</option>
+                                    <option value="bong_mat_duong_pho">Cây bóng mát đường phố &amp; Hạ nhiệt đảo nhiệt (UHI)</option>
+                                    <option value="cong_vien_do_thi">Công viên cây xanh &amp; Không gian công cộng đa tầng</option>
+                                    <option value="rung_ngap_man_can_gio">Phục hồi Rừng ngập mặn Cần Giờ (Tín chỉ Carbon xanh)</option>
+                                    <option value="thoat_nuoc_chong_ngap">Thành phố Bọt biển (Sponge City) &amp; Giảm ngập úng</option>
+                                    <option value="hoc_duong_benh_vien">Phủ xanh trường học, bệnh viện &amp; Khu công nghiệp</option>
+                                    <option value="custom">Kịch bản Tùy chỉnh (Tự nhập thông số)</option>
+                                </select>
+
+                                <!-- Liên kết với Phường/Xã WebGIS -->
+                                <div style="margin-top: 4px;">
+                                    <label style="font-size: 0.73rem; font-weight: 600; color: #64748b; display: flex; align-items: center; gap: 4px;">
+                                        <i class="fa-solid fa-location-dot" style="color: #0284c7;"></i>
+                                        <span>Hoặc chọn nhanh Phường/Xã TP.HCM:</span>
+                                    </label>
+                                    <select id="tb-ward-select" class="tb-select" style="font-size: 0.8rem; padding: 5px 8px; margin-top: 2px;">
+                                        <option value="">-- Chọn Phường/Xã để tính tự động theo diện tích &amp; NDVI --</option>
+                                    </select>
+                                </div>
+
+                                <div class="tb-scenario-desc-box" id="tb-scenario-desc">
+                                    Kịch bản chuẩn từ tài liệu nghiên cứu: Đánh giá tổng hợp toàn diện các giá trị sinh thái và kinh tế quy đổi.
+                                </div>
+                            </div>
+
+                            <!-- Lưới nhập 10 thông số chuẩn -->
+                            <div class="tb-params-grid">
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-tree"></i> Số cây (N):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-n" class="tb-input" value="1000" min="1" step="50" />
+                                        <span class="tb-unit-badge">cây</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-calendar-days"></i> Số năm (T):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-t" class="tb-input" value="10" min="1" max="100" step="1" />
+                                        <span class="tb-unit-badge">năm</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-cloud"></i> CO₂ hấp thụ (C):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-c" class="tb-input" value="20" min="0" step="1" />
+                                        <span class="tb-unit-badge">kg/cây/năm</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-cubes-stacked"></i> Sinh khối (B):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-b" class="tb-input" value="12" min="0" step="1" />
+                                        <span class="tb-unit-badge">kg/cây/năm</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-circle-dot"></i> Diện tích tán (S):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-s" class="tb-input" value="15" min="0" step="1" />
+                                        <span class="tb-unit-badge">m²/cây</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-droplet"></i> Nước giữ lại (R):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-r" class="tb-input" value="300" min="0" step="20" />
+                                        <span class="tb-unit-badge">lít/cây/năm</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-money-bill-wave"></i> Giá carbon (P₁):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-p1" class="tb-input" value="300000" min="0" step="10000" />
+                                        <span class="tb-unit-badge">đ/tấn CO₂</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-weight-hanging"></i> Giá sinh khối (P₂):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-p2" class="tb-input" value="1000" min="0" step="100" />
+                                        <span class="tb-unit-badge">đ/kg</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-faucet-drip"></i> Giá trị nước (P₃):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-p3" class="tb-input" value="10000" min="0" step="1000" />
+                                        <span class="tb-unit-badge">đ/m³</span>
+                                    </div>
+                                </div>
+
+                                <div class="tb-field">
+                                    <label><i class="fa-solid fa-chart-pie"></i> Hệ số tán (f):</label>
+                                    <div class="tb-input-wrapper">
+                                        <input type="number" id="tb-input-f" class="tb-input" value="1.0" min="0.1" max="1.0" step="0.05" />
+                                        <span class="tb-unit-badge">0–1</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Mở rộng Chi phí đầu tư & Bảo dưỡng -->
+                            <div class="tb-cost-toggle-box">
+                                <button type="button" class="tb-cost-toggle-btn" onclick="const g = document.getElementById('tb-cost-fields'); g.style.display = g.style.display === 'none' ? 'grid' : 'none';">
+                                    <i class="fa-solid fa-angle-right"></i> Tùy chọn Chi phí đầu tư &amp; Bảo dưỡng (Cđầu tư, Cbảo dưỡng)
+                                </button>
+                                <div id="tb-cost-fields" class="tb-cost-grid" style="display: none;">
+                                    <div class="tb-field">
+                                        <label><i class="fa-solid fa-hand-holding-dollar"></i> Chi phí đầu tư ban đầu:</label>
+                                        <div class="tb-input-wrapper">
+                                            <input type="number" id="tb-input-cinv" class="tb-input" value="0" min="0" step="1000000" />
+                                            <span class="tb-unit-badge">đồng</span>
+                                        </div>
+                                    </div>
+                                    <div class="tb-field">
+                                        <label><i class="fa-solid fa-screwdriver-wrench"></i> Chi phí bảo dưỡng tổng:</label>
+                                        <div class="tb-input-wrapper">
+                                            <input type="number" id="tb-input-cmaint" class="tb-input" value="0" min="0" step="1000000" />
+                                            <span class="tb-unit-badge">đồng</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Nút tính toán -->
+                            <div class="tb-actions-row">
+                                <button id="btn-tb-calculate" class="btn-tb-calc" title="Bấm để tính toán hoặc cập nhật số liệu">
+                                    <i class="fa-solid fa-calculator"></i> Tính lợi ích
+                                </button>
+                                <button id="btn-tb-reset" class="btn-tb-reset" title="Khôi phục lại bộ thông số tham khảo mặc định">
+                                    <i class="fa-solid fa-rotate-left"></i> Đặt lại
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Khung Kết quả ước tính (Mô phỏng hình ảnh cô giáo chuẩn 100%) -->
+                    <div class="tb-results-container">
+                        <div class="tb-results-header">
+                            <h4><i class="fa-solid fa-leaf" style="color: #16a34a;"></i> Kết quả ước tính (Tổng hợp)</h4>
+                            <span style="font-size: 0.72rem; color: #166534; font-weight: 600;">Tính ngay theo tham số</span>
+                        </div>
+
+                        <div class="tb-results-list">
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon co2"><i class="fa-solid fa-cloud"></i></span>
+                                    <span>CO₂ hấp thụ</span>
+                                </div>
+                                <div class="tb-res-val" id="tb-res-co2">200,00 tấn</div>
+                            </div>
+
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon o2"><i class="fa-solid fa-wind"></i></span>
+                                    <span>O₂ tạo ra</span>
+                                </div>
+                                <div class="tb-res-val" id="tb-res-o2">145,45 tấn</div>
+                            </div>
+
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon bio"><i class="fa-solid fa-cubes-stacked"></i></span>
+                                    <span>Sinh khối tăng thêm</span>
+                                </div>
+                                <div class="tb-res-val" id="tb-res-biomass">120.000 kg</div>
+                            </div>
+
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon shade"><i class="fa-solid fa-tree"></i></span>
+                                    <span>Diện tích bóng mát</span>
+                                </div>
+                                <div class="tb-res-val-group">
+                                    <div class="tb-res-val" id="tb-res-shade">15.000 m²</div>
+                                    <span class="tb-res-sub" id="tb-res-shade-sub">≈ 1,50 ha bóng mát</span>
+                                </div>
+                            </div>
+
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon water"><i class="fa-solid fa-droplet"></i></span>
+                                    <span>Nước mưa giữ lại</span>
+                                </div>
+                                <div class="tb-res-val" id="tb-res-water">3.000 m³</div>
+                            </div>
+
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon val-c"><i class="fa-solid fa-sack-dollar"></i></span>
+                                    <span>Giá trị carbon</span>
+                                </div>
+                                <div class="tb-res-val" id="tb-res-g1">60.000.000 đ</div>
+                            </div>
+
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon val-b"><i class="fa-solid fa-sack-dollar"></i></span>
+                                    <span>Giá trị sinh khối</span>
+                                </div>
+                                <div class="tb-res-val" id="tb-res-g2">120.000.000 đ</div>
+                            </div>
+
+                            <div class="tb-res-row">
+                                <div class="tb-res-label">
+                                    <span class="tb-res-icon val-w"><i class="fa-solid fa-sack-dollar"></i></span>
+                                    <span>Giá trị nước mưa giữ lại</span>
+                                </div>
+                                <div class="tb-res-val" id="tb-res-g3">30.000.000 đ</div>
+                            </div>
+                        </div>
+
+                        <!-- Khung Tổng lợi ích quy đổi nổi bật -->
+                        <div class="tb-total-benefit-box">
+                            <div class="tb-total-label">
+                                <i class="fa-solid fa-hand-holding-dollar" style="font-size: 1.2rem;"></i>
+                                <span>Tổng lợi ích quy đổi (giả định)</span>
+                            </div>
+                            <div class="tb-total-val" id="tb-res-total">210.000.000 đ</div>
+                        </div>
+
+                        <div id="tb-res-net-row" class="tb-net-row" style="display: none;">
+                            <span>Tổng chi phí: <strong id="tb-res-cost-total">0 đ</strong></span>
+                            <span>Lợi ích ròng: <strong id="tb-res-net" style="color: #15803d;">0 đ</strong></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CỘT PHẢI: Tab Công thức & Ký hiệu / Biểu đồ / So sánh kịch bản -->
+                <div class="tb-col-right">
+                    <!-- Tab Navigation Bar -->
+                    <div class="tb-right-tabs-bar">
+                        <button type="button" class="tb-right-tab-btn active" data-tab="formula">
+                            <i class="fa-solid fa-square-root-variable"></i> fx Công thức &amp; Ký hiệu
+                        </button>
+                        <button type="button" class="tb-right-tab-btn" data-tab="chart">
+                            <i class="fa-solid fa-chart-pie"></i> Biểu đồ trực quan
+                        </button>
+                        <button type="button" class="tb-right-tab-btn" data-tab="matrix">
+                            <i class="fa-solid fa-table-list"></i> So sánh các kịch bản
+                        </button>
+                    </div>
+
+                    <!-- TAB 1: CÔNG THỨC & KÝ HIỆU (Chuẩn theo ảnh cô giáo) -->
+                    <div id="tb-pane-formula" class="tb-tab-pane">
+                        <div class="tb-formula-section-title">
+                            <span><i class="fa-solid fa-calculator" style="color: #16a34a;"></i> Công thức tính (đơn giản)</span>
+                            <span style="font-size: 0.72rem; color: #64748b; font-weight: normal;">Nhập số là tính ngay</span>
+                        </div>
+
+                        <!-- Bảng Công thức tính (đơn giản) -->
+                        <table class="tb-formula-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 32%;">Chỉ tiêu</th>
+                                    <th>Công thức (nhập số là tính ngay)</th>
+                                    <th style="width: 20%;">Đơn vị</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><strong>CO₂ hấp thụ</strong></td>
+                                    <td><span class="tb-formula-code">CO₂ = N × C × T / 1000</span></td>
+                                    <td>(tấn CO₂)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>O₂ tạo ra</strong></td>
+                                    <td><span class="tb-formula-code">O₂ = CO₂ × 0,727</span></td>
+                                    <td>(tấn O₂)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Sinh khối tăng thêm</strong></td>
+                                    <td><span class="tb-formula-code">B_total = N × B × T</span></td>
+                                    <td>(kg)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Diện tích bóng mát</strong></td>
+                                    <td><span class="tb-formula-code">S_total = N × S × f</span></td>
+                                    <td>(m², f: 0–1)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Nước mưa giữ lại</strong></td>
+                                    <td><span class="tb-formula-code">V = N × R × T / 1000</span></td>
+                                    <td>(m³)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Giá trị carbon</strong></td>
+                                    <td><span class="tb-formula-code">G₁ = CO₂ × P₁</span></td>
+                                    <td>(đồng)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Giá trị sinh khối</strong></td>
+                                    <td><span class="tb-formula-code">G₂ = N × B × T × P₂</span></td>
+                                    <td>(đồng)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Giá trị giảm dòng chảy tràn</strong></td>
+                                    <td><span class="tb-formula-code">G₃ = V × P₃</span></td>
+                                    <td>(đồng)</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Tổng lợi ích (quy đổi)</strong></td>
+                                    <td><span class="tb-formula-code">G_tổng = G₁ + G₂ + G₃ - C_đầu tư - C_bảo dưỡng</span></td>
+                                    <td>(đồng)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <!-- Subgrid Ký hiệu & Equation dạng Word -->
+                        <div class="tb-symbols-grid">
+                            <!-- Khối ℹ Ký hiệu -->
+                            <div class="tb-sub-box">
+                                <div class="tb-sub-box-title">
+                                    <i class="fa-solid fa-circle-info" style="color: #0284c7;"></i>
+                                    <span>Ký hiệu các biến</span>
+                                </div>
+                                <ul class="tb-symbols-list">
+                                    <li><strong>N</strong> : Số cây trồng (cây)</li>
+                                    <li><strong>T</strong> : Số năm (năm)</li>
+                                    <li><strong>C</strong> : CO₂ hấp thụ/cây/năm (kg)</li>
+                                    <li><strong>B</strong> : Sinh khối tăng thêm/cây/năm (kg)</li>
+                                    <li><strong>S</strong> : Diện tích tán/cây (m²)</li>
+                                    <li><strong>R</strong> : Nước mưa giữ lại/cây/năm (lít)</li>
+                                    <li><strong>P₁</strong> : Giá carbon (đ/tấn CO₂)</li>
+                                    <li><strong>P₂</strong> : Giá sinh khối (đ/kg)</li>
+                                    <li><strong>P₃</strong> : Giá trị nước (đ/m³)</li>
+                                    <li><strong>f</strong> : Hệ số tán không chồng lấn (0–1)</li>
+                                    <li><strong>C_đầu tư, C_bảo dưỡng</strong> : Chi phí dự án (đồng)</li>
+                                </ul>
+                            </div>
+
+                            <!-- Khối W Công thức ở dạng Word (Equation) -->
+                            <div class="tb-sub-box">
+                                <div class="tb-sub-box-title">
+                                    <i class="fa-solid fa-file-word" style="color: #2563eb;"></i>
+                                    <span>Công thức ở dạng Word (Equation)</span>
+                                    <button id="btn-tb-copy-equation" class="btn-matrix-apply" style="margin-left: auto; padding: 2px 7px;" title="Sao chép toàn bộ công thức vào Word">
+                                        <i class="fa-solid fa-copy"></i> Sao chép
+                                    </button>
+                                </div>
+                                <div class="tb-equations-display">
+                                    <div class="eq-row">
+                                        <span>CO₂ = </span>
+                                        <span class="eq-frac">
+                                            <span class="eq-num">N × C × T</span>
+                                            <span class="eq-den">1000</span>
+                                        </span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>O₂ = CO₂ × 0.727</span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>B<sub>total</sub> = N × B × T</span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>S<sub>total</sub> = N × S × f</span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>V = </span>
+                                        <span class="eq-frac">
+                                            <span class="eq-num">N × R × T</span>
+                                            <span class="eq-den">1000</span>
+                                        </span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>G₁ = CO₂ × P₁</span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>G₂ = N × B × T × P₂</span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>G₃ = V × P₃</span>
+                                    </div>
+                                    <div class="eq-row">
+                                        <span>G<sub>tổng</sub> = G₁ + G₂ + G₃ - C<sub>đầu tư</sub> - C<sub>bảo dưỡng</sub></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 2: BIỂU ĐỒ TRỰC QUAN -->
+                    <div id="tb-pane-chart" class="tb-tab-pane" style="display: none;">
+                        <div class="tb-charts-layout">
+                            <div class="tb-chart-box">
+                                <div class="tb-chart-title">
+                                    <i class="fa-solid fa-chart-pie" style="color: #16a34a;"></i>
+                                    <span>Cơ cấu đóng góp giá trị kinh tế sinh thái (G₁, G₂, G₃)</span>
+                                </div>
+                                <div class="tb-chart-canvas-wrapper" style="height: 190px;">
+                                    <canvas id="tb-chart-pie"></canvas>
+                                </div>
+                            </div>
+
+                            <div class="tb-chart-box">
+                                <div class="tb-chart-title">
+                                    <i class="fa-solid fa-chart-line" style="color: #0284c7;"></i>
+                                    <span>Diễn tiến tích lũy lợi ích kinh tế &amp; sinh thái theo chuỗi năm (1 → T)</span>
+                                </div>
+                                <div class="tb-chart-canvas-wrapper" style="height: 190px;">
+                                    <canvas id="tb-chart-timeline"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 3: SO SÁNH CÁC KỊCH BẢN -->
+                    <div id="tb-pane-matrix" class="tb-tab-pane" style="display: none;">
+                        <div class="tb-formula-section-title">
+                            <span><i class="fa-solid fa-table-list" style="color: #16a34a;"></i> Ma trận so sánh các kịch bản thực tế</span>
+                            <span style="font-size: 0.72rem; color: #64748b;">Bấm 'Áp dụng' để tải kịch bản vào bảng tính</span>
+                        </div>
+
+                        <div class="tb-matrix-table-wrap">
+                            <table class="tb-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th style="text-align: left;">Kịch bản trồng cây</th>
+                                        <th>Số cây</th>
+                                        <th>Thời gian</th>
+                                        <th>CO₂ hấp thụ</th>
+                                        <th>Oxy tạo ra</th>
+                                        <th>Bóng mát</th>
+                                        <th>Nước giữ lại</th>
+                                        <th>Tổng lợi ích</th>
+                                        <th>Thao tác</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tb-matrix-body">
+                                    <!-- Render tự động bởi tree-benefit.js -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer tb-modal-footer">
+                <div class="tb-footer-left">
+                    <button id="btn-tb-export-csv" class="btn-tb-tool" title="Xuất báo cáo định dạng Excel / CSV">
+                        <i class="fa-solid fa-file-excel" style="color: #16a34a;"></i>
+                        <span>Xuất CSV</span>
+                    </button>
+                    <button id="btn-tb-copy-summary" class="btn-tb-tool" title="Sao chép toàn bộ tóm tắt kết quả tính toán">
+                        <i class="fa-solid fa-copy" style="color: #0284c7;"></i>
+                        <span>Sao chép kết quả</span>
+                    </button>
+                    <button id="btn-tb-print" class="btn-tb-tool" title="In ấn báo cáo kết quả A4">
+                        <i class="fa-solid fa-print"></i>
+                        <span>In báo cáo</span>
+                    </button>
+                </div>
+                <button id="btn-close-tb-modal-footer" class="btn btn-secondary" style="padding: 7px 18px; font-weight: 600;">
+                    <i class="fa-solid fa-xmark"></i> Đóng
+                </button>
+            </div>
+        </div>
+    </div>
+    <div id="mc-print-sheet" aria-hidden="true"></div>
+
     <!-- Toast Notification Popup -->
     <div id="app-toast" class="app-toast" style="display: none;"></div>
 
@@ -1108,5 +1607,6 @@
     <script src="/static/js/map3d.js?v=12.2"></script>
     <script src="/static/js/analysis.js?v=12.2"></script>
     <script src="/static/js/pixel-raster.js?v=12.2"></script>
+    <script src="/static/js/tree-benefit.js?v=12.2"></script>
 </body>
 </html>

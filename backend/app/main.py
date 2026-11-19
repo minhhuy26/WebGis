@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from .config import settings
 from .database import SessionLocal, check_connection, engine
-from .routers import tvdi, stats, gee, prediction, auth, bulletins
+from .routers import tvdi, stats, gee, prediction, auth, bulletins, tree_benefit
 
 # ---- Tạo ứng dụng FastAPI -------------------------------------------------
 app = FastAPI(
@@ -38,6 +38,7 @@ app.include_router(prediction.router)
 app.include_router(gee.router)
 app.include_router(auth.router)
 app.include_router(bulletins.router)
+app.include_router(tree_benefit.router, prefix="/api", tags=["Lợi ích Cây xanh"])
 
 # ---- Phục vụ frontend (static files) ---------------------------------------
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
