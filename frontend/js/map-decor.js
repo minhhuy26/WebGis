@@ -345,20 +345,19 @@ function updateMapTitle() {
         return;
     }
 
-    const isAdmin = (typeof isAdminUser === 'function') ? isAdminUser() : false;
-    let source = '';
-    if (isAdmin) {
-        if (state.displayMode === 'ward') {
-            source = ' · giá trị trung bình 167 phường/xã';
-        } else if (state.rasterSource === 'pixel' && typeof pixelRaster !== 'undefined' && pixelRaster.field) {
-            source = ` · ${pixelRaster.field.label}`;
-        } else if (state.rasterSource === 'gee') {
-            source = ' · ảnh Landsat 30 m (Google Earth Engine)';
-        } else {
-            source = ' · nội suy lưới ~5,5 km';
-        }
-    } else if (state.displayMode === 'ward') {
-        source = ' · 167 phường/xã';
+    let source;
+    if (state.displayMode === 'ward') {
+        source = ' · ' + (wardPeriodLabel(state.wards.source) || 'Đang tải phường/xã…');
+    } else if (state.rasterSource === 'nodata' || state.rasterSource === 'hidden') {
+        source = state.rasterSource === 'hidden' ? ' · lớp đang ẩn' : ' · chưa có dữ liệu';
+    } else if (state.rasterSource === 'loading') {
+        source = ' · đang tải lớp bản đồ';
+    } else if (state.rasterSource === 'pixel' && getActivePixelField(key)) {
+        source = ' · ' + getActivePixelField(key).label;
+    } else if (state.rasterSource === 'gee') {
+        source = ' · ảnh Landsat 30 m trong kỳ';
+    } else {
+        source = ' · nội suy từ lưới ~5,5 km của kỳ đã chọn';
     }
     subEl.innerHTML = `<strong>${describeCurrentView(false)}</strong>${source}${state.viewMode === '3d' ? ' <span class="title-3d-tag">3D</span>' : ''}`;
 }
@@ -388,7 +387,7 @@ function renderLegend(layerKey) {
     if (badgeEl) {
         badgeEl.innerText = state.displayMode === 'ward'
             ? 'phường/xã'
-            : ({ gee: 'pixel 30 m', pixel: 'pixel 120 m' }[state.rasterSource] || 'nội suy');
+            : ({ gee: 'pixel 30 m', pixel: 'pixel 120 m', loading: 'đang tải', nodata: 'chưa có dữ liệu', hidden: 'lớp đang ẩn' }[state.rasterSource] || 'nội suy');
     }
     if (gradEl) {
         const n = cfg.colors.length - 1;

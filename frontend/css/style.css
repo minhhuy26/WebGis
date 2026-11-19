@@ -6602,3 +6602,10 @@ body:not(.is-admin) .admin-tech-only {
         grid-template-columns: 1fr;
     }
 }
+
+.monthly-validation { margin: .5rem 0; font-size: .82rem; line-height: 1.5; }
+.monthly-validation summary { cursor: pointer; font-weight: 600; }
+.monthly-validation p { margin: .5rem 0; }
+.monthly-validation table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.monthly-validation caption { text-align: left; }
+.monthly-validation th, .monthly-validation td { padding: .2rem .4rem; text-align: right; border-bottom: 1px solid #cbd5e1; }

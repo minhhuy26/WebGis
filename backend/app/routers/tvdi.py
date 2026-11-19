@@ -102,6 +102,7 @@ def list_wards(
     max_tvdi: Optional[float] = Query(None, description="Ngưỡng TVDI tối đa"),
     start: Optional[str] = Query(None, description="Ngày bắt đầu khi lấy giá trị trung bình theo khoảng (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="Ngày kết thúc khi lấy giá trị trung bình theo khoảng (YYYY-MM-DD)"),
+    observation_only: bool = Query(False, description="Chỉ xếp hạng từ dữ liệu quan trắc"),
     horizon: Optional[str] = Query(None, description="Khung dự báo khi xem mốc dự báo: daily_7d | monthly_12m | 15day"),
     db: Session = Depends(get_db),
 ):
@@ -121,6 +122,11 @@ def list_wards(
         start = _validate_date(start, "start")
         end = _validate_date(end, "end")
 
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.")
+    if horizon and (observation_only or start):
+        raise HTTPException(status_code=400, detail="Chọn dữ liệu quan trắc hoặc một khung dự báo.")
+
     data = tvdi_service.get_wards_ranking(
         db=db,
         date_str=date,
@@ -134,6 +140,7 @@ def list_wards(
         start_str=start,
         end_str=end,
         horizon=horizon,
+        observation_only=observation_only,
     )
     return data
 

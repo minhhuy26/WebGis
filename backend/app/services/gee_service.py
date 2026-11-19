@@ -404,6 +404,10 @@ def get_tile_url_for_date(
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         end_date_str = (dt + timedelta(days=15)).strftime("%Y-%m-%d")
 
+    else:
+        # The map requests inclusive calendar dates. Earth Engine's upper limit is exclusive.
+        end_date_str = (datetime.strptime(end_date_str, "%Y-%m-%d") + timedelta(days=1)).date().isoformat()
+
     cache_key = f"{src}_{layer_name}_{date_str}_{end_date_str}_{vis_min}_{vis_max}"
     if cache_key in _cached_tile_urls:
         return _cached_tile_urls[cache_key]
@@ -412,7 +416,7 @@ def get_tile_url_for_date(
         return None
 
     region = get_region_geometry(db)
-    comp = build_composite(date_str, end_date_str, region, satellite_source=src)
+    comp = build_composite(date_str, end_date_str, region, satellite_source=src, window_days=15)
 
     band_map = {"tvdi": "TVDI", "lst": "LST_C", "ndvi": "NDVI"}
     band = band_map.get(layer_name.lower(), "TVDI")

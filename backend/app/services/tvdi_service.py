@@ -740,6 +740,7 @@ def get_wards_ranking(
     satellite_source: str = "LANDSAT",
     granularity: str = "15day",
     horizon: Optional[str] = None,
+    observation_only: bool = False,
 ) -> Dict[str, Any]:
     """
     Lập danh sách xếp hạng 167 phường/xã TP.HCM theo chỉ số LST, NDVI, TVDI cho một mốc ngày
@@ -749,7 +750,11 @@ def get_wards_ranking(
     # 1. Danh mục chuẩn 167 phường/xã (bảng PostGIS tvdi.wards hoặc file JSON)
     wards_rows = get_wards_rows(db)
 
-    empty_result = {"date": date_str, "is_forecast": False, "horizon_type": horizon, "is_simulated": False,
+    requested = {"requested_date": date_str, "start": start_str, "end": end_str}
+    ranged = bool(start_str and end_str)
+    actual_date = None if ranged else date_str
+    actual_start = actual_end = None
+    empty_result = {**requested, "actual_start": None, "actual_end": None, "actual_date": None, "date": date_str, "is_forecast": False, "horizon_type": horizon, "is_simulated": False,
                     "total_wards": len(wards_rows), "matching_wards": 0, "sort_by": sort_by, "stats": {}, "wards": []}
     if not wards_rows:
         return empty_result
@@ -763,18 +768,23 @@ def get_wards_ranking(
     if start_str and end_str:
         # 2a. Giá trị trung bình của từng ô lưới trong khoảng thời gian
         grid_rows = db.execute(text("""
-            SELECT lon, lat, lst_c, ndvi, tvdi FROM (
-                SELECT cell_id, AVG(lon) AS lon, AVG(lat) AS lat,
+            SELECT lon, lat, lst_c, ndvi, tvdi, first_date, last_date FROM (
+                SELECT cell_id, MIN(date) AS first_date, MAX(date) AS last_date, AVG(lon) AS lon, AVG(lat) AS lat,
                        AVG(lst_c) AS lst_c, AVG(ndvi) AS ndvi, AVG(tvdi) AS tvdi
                 FROM tvdi.tvdi_grid
                 WHERE date BETWEEN :s AND :e
                   AND satellite_source = :src
                   AND granularity = :gran
+                  AND (tvdi IS NOT NULL OR lst_c IS NOT NULL OR ndvi IS NOT NULL)
                 GROUP BY cell_id
             ) agg
-            WHERE tvdi IS NOT NULL OR lst_c IS NOT NULL
+            WHERE tvdi IS NOT NULL OR lst_c IS NOT NULL OR ndvi IS NOT NULL
         """), {"s": start_str, "e": end_str, "src": satellite_source, "gran": granularity}).fetchall()
-    else:
+        if grid_rows:
+            actual_start = min(r[5] for r in grid_rows).isoformat()
+            actual_end = max(r[6] for r in grid_rows).isoformat()
+            grid_rows = [r[:5] for r in grid_rows]
+    elif not horizon:
         # 2b-1. Ưu tiên đọc từ bảng chuẩn tvdi.ward_observations nếu đã có đủ 167 phường
         try:
             obs_rows = db.execute(text("""
@@ -784,7 +794,7 @@ def get_wards_ranking(
                   AND satellite_source = :src
                   AND granularity = :gran
             """), {"d": date_str, "src": satellite_source, "gran": granularity}).fetchall()
-            if len(obs_rows) >= len(wards_rows):
+            if len(obs_rows) >= len(wards_rows) and any(v is not None for r in obs_rows for v in r[1:4]):
                 precomputed_by_ward = {
                     int(r[0]): {
                         "lst_c": round(float(r[1]), 2) if r[1] is not None else None,
@@ -808,7 +818,7 @@ def get_wards_ranking(
                   AND (tvdi IS NOT NULL OR lst_c IS NOT NULL OR ndvi IS NOT NULL)
             """), {"d": date_str, "src": satellite_source, "gran": granularity}).fetchall()
 
-    if precomputed_by_ward is None and not grid_rows and not (start_str and end_str):
+    if precomputed_by_ward is None and not grid_rows and not ranged and not observation_only:
         # 2c-1. Ưu tiên đọc từ tvdi.ward_forecasts theo horizon nếu đã có sẵn
         if not effective_horizon:
             avail_h = [
@@ -838,7 +848,7 @@ def get_wards_ranking(
                     """),
                     {"d": date_str, "h": effective_horizon, "src": satellite_source},
                 ).fetchall()
-                if len(wf_rows) >= len(wards_rows):
+                if len(wf_rows) >= len(wards_rows) and any(v is not None for r in wf_rows for v in r[1:4]):
                     is_forecast = True
                     is_simulated = bool(wf_rows[0][4])
                     precomputed_by_ward = {
@@ -879,16 +889,17 @@ def get_wards_ranking(
                 is_simulated = bool(f_rows[0][5])
                 grid_rows = [r[:5] for r in f_rows]
 
-    if precomputed_by_ward is None and not grid_rows:
+    if precomputed_by_ward is None and not grid_rows and not ranged and not horizon:
         # 2d. Nếu vẫn không có, lấy ngày hiện trạng gần nhất trong tvdi_grid
         closest = db.execute(text("""
-            SELECT date FROM tvdi.tvdi_series
+            SELECT date FROM tvdi.tvdi_grid
             WHERE satellite_source = :src AND granularity = :gran
-            ORDER BY ABS(date - CAST(:d AS date)) ASC
+              AND (tvdi IS NOT NULL OR lst_c IS NOT NULL OR ndvi IS NOT NULL)
+            GROUP BY date ORDER BY ABS(date - CAST(:d AS date)), date
             LIMIT 1
         """), {"d": start_str or date_str, "src": satellite_source, "gran": granularity}).fetchone()
         if closest:
-            c_date = closest[0].strftime("%Y-%m-%d")
+            actual_date = closest[0].isoformat()
             grid_rows = db.execute(text("""
                 SELECT lon, lat, lst_c, ndvi, tvdi
                 FROM tvdi.tvdi_grid
@@ -896,7 +907,7 @@ def get_wards_ranking(
                   AND satellite_source = :src
                   AND granularity = :gran
                   AND (tvdi IS NOT NULL OR lst_c IS NOT NULL OR ndvi IS NOT NULL)
-            """), {"d": c_date, "src": satellite_source, "gran": granularity}).fetchall()
+            """), {"d": actual_date, "src": satellite_source, "gran": granularity}).fetchall()
             is_forecast = False
 
     if precomputed_by_ward is None:
@@ -1002,9 +1013,11 @@ def get_wards_ranking(
     }
 
     return {
+        **requested,
         "date": date_str,
-        "start": start_str,
-        "end": end_str,
+        "actual_date": actual_date,
+        "actual_start": actual_start,
+        "actual_end": actual_end,
         "satellite_source": satellite_source,
         "granularity": granularity,
         "is_forecast": is_forecast,

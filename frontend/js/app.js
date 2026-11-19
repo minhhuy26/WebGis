@@ -103,6 +103,7 @@ const state = {
     // Danh sách & Bộ lọc xếp hạng 167 Phường (Yêu cầu 1 & 2)
     wards: {
         list: [],
+        source: null,
         allList: [],        // Toàn bộ 167 phường/xã (không lọc ngưỡng) – dùng tô màu bản đồ & 3D
         isForecast: false,
         sortBy: 'lst_desc', // 'lst_desc' | 'ndvi_asc' | 'tvdi_desc' | 'name_asc'
@@ -855,7 +856,8 @@ function resolveDataView(dateStr) {
     }
     const periodStart = getObservedPeriodStart(dateStr);
     const next = obs.find(d => d > periodStart);
-    const periodEnd = next ? addDays(next, -1) : addDays(periodStart, 14);
+    const last = addDays(periodStart, 14);
+    const periodEnd = next && next <= last ? addDays(next, -1) : last;
     return { kind: 'cycle', date: periodStart, start: periodStart, end: periodEnd, key: `cycle:${periodStart}` };
 }
 
@@ -885,10 +887,11 @@ async function loadDataForCurrentDate() {
         else url = `/api/grid/${view.date}`;
 
         let res = await fetch(url);
-        if (!res.ok && view.kind === 'cycle') {
+        if (res.status === 404 && view.kind === 'cycle') {
             // Nếu ngày không có trong Landsat thực tế thì gọi nội suy dự báo
             res = await fetch(`/api/prediction/grid/${dateStr}`);
             view.kind = 'forecast';
+            view.date = dateStr;
             view.horizon = '15day';
             view.key = `forecast:15day:${dateStr}`;
         }
@@ -899,6 +902,10 @@ async function loadDataForCurrentDate() {
         if (view.kind === 'forecast') {
             view.horizon = data.horizon_type || view.horizon;
             view.isSimulated = !!data.is_simulated;
+        }
+        if (state.currentDataKey !== view.key && state.displayMode === 'pixel') {
+            clearRasterLayers();
+            state.rasterSource = 'loading';
         }
         state.currentGridData = data;
         state.currentView = view;
@@ -1045,18 +1052,21 @@ async function renderActiveRaster() {
     const opacity = state.layerOpacities[layer];
     if (!isVisible || !state.currentGridData) {
         clearRasterLayers();
+        state.rasterSource = isVisible ? 'nodata' : 'hidden';
+        renderLegend(layer);
+        updateMapTitle();
         return;
     }
 
     const view = state.currentView || {};
 
     // 6.1 Dữ liệu quan trắc thực tế: ưu tiên ảnh Landsat 30 m trực tiếp từ Google Earth Engine
-    if (view.kind !== 'forecast' && state.geeStatus && state.geeStatus.initialized) {
+    if (view.kind === 'cycle' && state.geeStatus && state.geeStatus.initialized) {
         try {
             const cfg = GEE_COLOR_PALETTES[layer];
             const startDate = view.start || view.date;
             let url = `/api/gee/tile/${layer}/${startDate}?vmin=${cfg.min}&vmax=${cfg.max}`;
-            if (view.kind === 'aggregate') url += `&end=${view.end}`;
+            url += `&end=${view.end}`;
             const res = await fetch(url);
             if (token !== state.rasterSeq) return;
             if (res.ok) {
@@ -1072,6 +1082,7 @@ async function renderActiveRaster() {
                     });
                     rasterLayerGroup.addLayer(state.geeTileLayer);
                     state.rasterSource = 'gee';
+                    renderLegend(layer);
                     updateMapTitle();
                     return;
                 }
@@ -1095,15 +1106,15 @@ async function renderActiveRaster() {
 
     // 6.3 Không có ảnh pixel: bề mặt nội suy IDW từ lưới ô, cắt theo ranh giới
     clearRasterLayers();
-    renderSmoothRasterCanvas(layer, opacity);
-    state.rasterSource = 'idw';
+    state.rasterSource = renderSmoothRasterCanvas(layer, opacity) ? 'idw' : 'nodata';
+    renderLegend(layer);
     updateMapTitle();
 }
 
 // Ảnh raster pixel (~275 m) nội suy IDW từ lưới ô ~5,5 km, cắt chuẩn theo ranh giới đất liền TP.HCM
 function renderSmoothRasterCanvas(layerKey, opacity) {
     const grid = computeRasterGrid(layerKey);
-    if (!grid) return;
+    if (!grid) return false;
 
     const canvas = document.createElement('canvas');
     canvas.width = grid.w;
@@ -1133,6 +1144,7 @@ function renderSmoothRasterCanvas(layerKey, opacity) {
         className: 'raster-pixelated',
     });
     rasterLayerGroup.addLayer(state.localRasterLayer);
+    return true;
 }
 
 // --- 7. Vô hiệu hóa lớp lưới ô đa giác 5km thô ráp theo yêu cầu người dùng ---
@@ -1826,7 +1838,10 @@ function renderSelectedCell(props, clickInfo = null) {
 }
 
 // --- 10. Tải và Vẽ biểu đồ Chuỗi thời gian (Dự báo 7 ngày giả lập / 12 tháng AI / Lịch sử 2017–2025) ---
+let chartRequestId = 0;
 async function loadChartData() {
+    const requestId = ++chartRequestId;
+    document.getElementById('monthly-validation').hidden = true;
     const showTech = isAdminUser();
     if (state.chartMode === 'compare' && !showTech) {
         state.chartMode = state.isAIMode ? (state.forecastHorizon === 'monthly_12m' ? '12months' : '7days') : 'history';
@@ -1883,6 +1898,7 @@ async function loadChartData() {
             const res = await fetch(`/api/prediction/series/${endpoint}/${target}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
+            if (requestId !== chartRequestId) return;
             renderForecastHorizonChart(data);
         } catch (err) {
             console.error(`Lỗi khi tải dự báo ${is7Days ? '7 ngày' : '12 tháng'}:`, err);
@@ -1894,6 +1910,7 @@ async function loadChartData() {
             const res = await fetch(isCell ? `/api/prediction/series/${cellId}` : '/api/prediction/series/overall');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
+            if (requestId !== chartRequestId) return;
             renderCompareChart(data.series || []);
         } catch (err) {
             console.error('Lỗi khi tải chuỗi so sánh Thực tế vs AI:', err);
@@ -1906,6 +1923,7 @@ async function loadChartData() {
                 : `/api/series/overall`;
             const res = await fetch(url);
             const data = await res.json();
+            if (requestId !== chartRequestId) return;
             const locName = state.selectedPoint ? state.selectedPoint.locationName : '';
             const coordsStr = state.selectedPoint
                 ? ` – ${locName} (${state.selectedPoint.lat.toFixed(4)}°N, ${state.selectedPoint.lon.toFixed(4)}°E)`
@@ -1941,6 +1959,43 @@ async function loadOverallTimeSeries() {
     await loadChartData();
 }
 
+function showMonthlyValidation(data, key) {
+    const panel = document.getElementById('monthly-validation');
+    const heading = document.getElementById('monthly-validation-summary');
+    const note = document.getElementById('monthly-validation-note');
+    const body = document.getElementById('monthly-validation-rows');
+    const evaluation = data.monthly_evaluation;
+    const entry = evaluation?.indices?.[key];
+    const scope = data.scope === 'cell' ? 'grid' : 'overall';
+    const area = scope === 'grid' ? 'các ô lưới' : 'toàn vùng';
+    const format = value => Number.isFinite(value) ? value.toLocaleString('vi-VN', {maximumFractionDigits: 3}) : '—';
+    const label = INDEX_META[key].label;
+    panel.hidden = false;
+    body.replaceChildren();
+    if (!entry) {
+        heading.textContent = 'Chưa có kiểm định 12 tháng cho phiên dự báo này';
+        note.textContent = '';
+        panel.querySelector('table').hidden = true;
+        return;
+    }
+    panel.querySelector('table').hidden = false;
+    const score = entry[scope];
+    const unit = key === 'lst' ? ' °C' : '';
+    heading.textContent = `Kiểm định ${label} · ${area} · R² ${format(score.r2_score)} · MAE ${format(score.mae)}${unit}`;
+    const monthId = iso => Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7));
+    const first = monthId(data.start_date) - monthId(evaluation.last_observation);
+    const last = monthId(data.end_date) - monthId(evaluation.last_observation);
+    const beyond = last > entry.by_lead.length ? ' Các bước sau tháng 12 chưa được kiểm định.' : '';
+    const weak = Number.isFinite(score.r2_score) && score.r2_score <= 0 ? ' R² không dương: sai số bình phương bằng hoặc lớn hơn khi dùng trung bình tập kiểm tra.' : '';
+    note.textContent = `Kiểm tra trên ${evaluation.origins} mốc phát hành, đối chiếu với quan trắc 2024–2025. Chỉ chấm các ô có số đo trong tháng. R² ${format(score.r2_score)}, RMSE ${format(score.rmse)}${unit}.${weak} Chuỗi đang xem cách tháng quan trắc cuối (${evaluation.last_observation.slice(0, 7)}) từ ${first} đến ${last} tháng.${beyond}`;
+    for (const step of entry.by_lead) {
+        const row = body.insertRow();
+        [step.lead, step[scope].r2_score, step[scope].rmse, step[scope].mae].forEach(value => {
+            row.insertCell().textContent = format(value);
+        });
+    }
+}
+
 function renderForecastHorizonChart(data) {
     if (!data || !data.series || data.series.length === 0) return;
     const series = data.series;
@@ -1949,6 +2004,7 @@ function renderForecastHorizonChart(data) {
     const key = state.activeRasterLayer || 'tvdi';
     const meta = INDEX_META[key];
     const isMonthly = data.horizon_type === 'monthly_12m';
+    if (isMonthly) showMonthlyValidation(data, key);
     const isSim = !!data.is_simulated;
 
     // Cập nhật thanh tiêu đề & vị trí trực quan phía trên
@@ -3579,8 +3635,8 @@ async function initAIMetrics() {
         const rmseEl = document.getElementById('rf-rmse-val');
         const maeEl = document.getElementById('rf-mae-val');
 
-        const ov = data.overall_metrics || data.monthly_metrics?.tvdi_overall || {};
-        const gr = data.grid_metrics || data.monthly_metrics?.tvdi_grid || {};
+        const ov = data.overall_metrics || {};
+        const gr = data.grid_metrics || {};
 
         if (r2El && ov.r2_score !== undefined) r2El.innerText = ov.r2_score.toFixed(3);
         if (rmseEl && ov.rmse !== undefined) rmseEl.innerText = ov.rmse.toFixed(3);
@@ -4728,7 +4784,10 @@ async function loadWardsData(targetDate) {
     let d = targetDate || state.currentDate || '2024-03-01';
     let range = '';
     let horizonParam = '';
-    if (view && view.kind === 'cycle') d = view.date;
+    if (view && view.kind === 'cycle') {
+        d = view.date;
+        horizonParam = '&observation_only=true';
+    }
     else if (view && view.kind === 'aggregate') {
         d = view.start;
         range = `&start=${view.start}&end=${view.end}`;
@@ -4748,6 +4807,22 @@ async function loadWardsData(targetDate) {
     const filtered = url !== baseUrl;
 
     const seq = ++state.wardsSeq;
+    const exportButton = document.getElementById('btn-export-wards-csv');
+    if (exportButton) exportButton.disabled = true;
+    if (state.wards.source?.viewKey !== view?.key) {
+        state.wards.source = null;
+        state.wards.list = [];
+        state.wards.allList = [];
+        renderWardsTable();
+        renderWardsSourceNote(null);
+        refreshSelectedWardDetail();
+        renderWardsMapMarkers();
+        if (state.displayMode === 'ward') {
+            renderWardsBoundary();
+            updateMapTitle();
+            if (state.viewMode === '3d') update3DData();
+        }
+    }
     try {
         const requests = [fetch(url)];
         if (filtered) requests.push(fetch(baseUrl));   // Danh sách đầy đủ để tô màu bản đồ phường/xã
@@ -4759,7 +4834,14 @@ async function loadWardsData(targetDate) {
         state.wards.list = data.wards || [];
         state.wards.allList = filtered ? (fullData.wards || []) : state.wards.list;
         state.wards.isForecast = !!data.is_forecast;
-        renderWardsSourceNote(data);
+        state.wards.source = {
+            requested: data.requested_date || d, actual: data.actual_date,
+            start: data.start, end: data.end, first: data.actual_start, last: data.actual_end,
+            isForecast: !!data.is_forecast, viewKey: view?.key,
+        };
+        if (exportButton) exportButton.disabled = !state.wards.list.length;
+        renderWardsSourceNote(state.wards.source);
+        updateMapTitle();
         renderWardsTable();
         renderWardsMapMarkers();
         if (state.displayMode === 'ward') renderWardsBoundary();
@@ -4767,28 +4849,42 @@ async function loadWardsData(targetDate) {
         refreshSelectedWardDetail();
         refreshAnalysisCharts();
     } catch (e) {
+        if (seq !== state.wardsSeq) return;
+        state.wards.source = null;
+        state.wards.list = [];
+        state.wards.allList = [];
+        renderWardsTable();
+        renderWardsMapMarkers();
+        if (state.displayMode === 'ward') {
+            renderWardsBoundary();
+            updateMapTitle();
+            if (state.viewMode === '3d') update3DData();
+        }
+        renderWardsSourceNote(null, 'Chưa tải được số liệu phường/xã cho kỳ đã chọn.');
+        refreshSelectedWardDetail();
         console.error('Lỗi nạp danh sách 167 phường:', e);
     }
 }
 
 // Ghi chú nguồn số liệu của bảng xếp hạng (hiển thị theo cột thực tế trong CSDL)
-function renderWardsSourceNote(data) {
+function wardPeriodLabel(source) {
+    if (!source) return '';
+    if (source.first && source.last) {
+        return `Quan trắc từ ${formatDateVN(source.first)} đến ${formatDateVN(source.last)}`;
+    }
+    if (!source.actual) return 'Không có số liệu cho kỳ yêu cầu';
+    const date = formatDateVN(source.actual);
+    if (source.actual !== source.requested) {
+        return `Yêu cầu ${formatDateVN(source.requested)} · dùng quan trắc gần nhất ngày ${date}`;
+    }
+    return `${source.isForecast ? 'Dự báo' : 'Quan trắc'} ngày ${date}`;
+}
+
+function renderWardsSourceNote(source, message = 'Đang tải số liệu phường/xã…') {
     const note = document.getElementById('wards-source-note');
     if (!note) return;
-    if (data.is_forecast) {
-        const hasLst = (data.wards || []).some(w => w.lst_c !== null && w.lst_c !== undefined);
-        const hasNdvi = (data.wards || []).some(w => w.ndvi !== null && w.ndvi !== undefined);
-        note.style.display = 'block';
-        note.innerHTML = (hasLst && hasNdvi)
-            ? '<i class="fa-solid fa-wand-magic-sparkles"></i> Mốc dự báo: giá trị LST, NDVI, TVDI đọc từ kết quả dự báo lưu trong CSDL.'
-            : '<i class="fa-solid fa-wand-magic-sparkles"></i> Mốc dự báo: TVDI từ CSDL dự báo (LST / NDVI chưa có dữ liệu dự báo sẽ hiển thị “--”).';
-    } else if (state.currentView && state.currentView.kind === 'aggregate') {
-        note.style.display = 'block';
-        note.innerHTML = `<i class="fa-solid fa-calendar-week"></i> Giá trị trung bình ${describeCurrentView(true)} – nội suy IDW tại tâm phường/xã.`;
-    } else {
-        note.style.display = 'none';
-        note.innerHTML = '';
-    }
+    note.style.display = 'block';
+    note.textContent = source ? wardPeriodLabel(source) : message;
 }
 
 // Cập nhật thẻ chi tiết của phường/xã đang chọn theo số liệu mới (khi đổi ngày / chỉ số)
@@ -4796,7 +4892,11 @@ function refreshSelectedWardDetail() {
     const wid = state.wards.selectedWardId;
     if (!wid || !state.selectedPoint || !state.selectedPoint.isWard) return;
     const ward = (state.wards.allList || []).find(w => w.ward_id === wid) || (state.wards.list || []).find(w => w.ward_id === wid);
-    if (!ward) return;
+    if (!ward) {
+        const panel = document.getElementById('cell-detail-content');
+        if (panel) panel.textContent = 'Chưa có số liệu phường/xã cho kỳ này.';
+        return;
+    }
     const theme = getDroughtUITheme(ward.tvdi);
     const values = { lst: ward.lst_c, ndvi: ward.ndvi };
     renderPointDetail(ward.lat, ward.lon, ward.tvdi, theme, state.selectedPoint.locationName, values);
@@ -4805,16 +4905,17 @@ function refreshSelectedWardDetail() {
 // Xuất bảng xếp hạng phường/xã đang hiển thị ra CSV (UTF-8, mở được bằng Excel)
 function exportWardsCSV() {
     const list = state.wards.list || [];
-    if (!list.length) {
+    const source = state.wards.source;
+    if (!list.length || !source || source.viewKey !== state.currentView?.key) {
         showToast('Chưa có dữ liệu phường/xã để xuất.');
         return;
     }
     const q = s => `"${String(s ?? '').replace(/"/g, '""')}"`;
-    const rows = [['Hạng', 'Mã', 'Phường/Xã', 'Khu vực', 'Loại', 'Vĩ độ', 'Kinh độ', 'LST (°C)', 'NDVI', 'TVDI', 'Cấp độ khô hạn']];
-    list.forEach(w => rows.push([w.rank, w.ward_id, q(w.name), q(w.district), q(w.type), w.lat, w.lon, w.lst_c, w.ndvi, w.tvdi, q(w.drought_label)]));
-    const label = removeVietnameseTones(describeCurrentView(true)).replace(/[^0-9A-Za-z_-]+/g, '_');
+    const rows = [['Hạng', 'Mã', 'Phường/Xã', 'Khu vực', 'Loại', 'Vĩ độ', 'Kinh độ', 'LST (°C)', 'NDVI', 'TVDI', 'Cấp độ khô hạn', 'Ngày yêu cầu', 'Từ ngày yêu cầu', 'Đến ngày yêu cầu', 'Ngày dữ liệu', 'Quan trắc đầu', 'Quan trắc cuối', 'Nguồn']];
+    list.forEach(w => rows.push([w.rank, w.ward_id, q(w.name), q(w.district), q(w.type), w.lat, w.lon, w.lst_c, w.ndvi, w.tvdi, q(w.drought_label), source.requested, source.start, source.end, source.actual, source.first, source.last, source.isForecast ? 'Dự báo' : 'Quan trắc']));
+    const label = source.actual || [source.first, source.last].join('_');
     downloadTextFile(`Xep_hang_phuong_xa_${label}.csv`, '﻿' + rows.map(r => r.join(',')).join('\r\n'), 'text/csv;charset=utf-8;');
-    logUserAction('Xuất CSV phường/xã', `Xuất ${list.length} phường/xã (${describeCurrentView(true)})`);
+    logUserAction('Xuất CSV phường/xã', `Xuất ${list.length} phường/xã (${wardPeriodLabel(source)})`);
 }
 
 function downloadTextFile(filename, content, mime) {
@@ -4854,7 +4955,9 @@ function renderWardsTable() {
             <tr>
                 <td colspan="5" style="text-align: center; padding: 24px; color: #94a3b8;">
                     <i class="fa-solid fa-filter-circle-xmark" style="font-size: 1.5rem; margin-bottom: 8px; display: block;"></i>
-                    Không có phường nào thỏa mãn ngưỡng lọc đã chọn.
+                    ${state.wards.source?.actual || state.wards.source?.first
+                        ? 'Không có phường nào thỏa mãn bộ lọc.'
+                        : 'Chưa có số liệu phường/xã cho kỳ này.'}
                 </td>
             </tr>
         `;

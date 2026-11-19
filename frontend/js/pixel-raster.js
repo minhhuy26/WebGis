@@ -135,14 +135,19 @@ function getPixelGeometry() {
 
 // Ảnh Landsat ứng với mốc đang xem: { name, when } hoặc null nếu không có
 function findPixelImage(info, view) {
-    const month = (view.date || view.start || '').substring(0, 7);
-    if (view.kind === 'cycle' || (view.kind === 'aggregate' && view.agg === 'month')) {
-        if (info.months.includes(month)) return { name: month.replace('-', '_'), when: `tháng ${month.substring(5)}/${month.substring(0, 4)}` };
-    } else if (view.kind === 'aggregate' && view.agg === 'year') {
-        const y = view.start.substring(0, 4);
-        if (info.years.includes(y)) return { name: `Y_${y}`, when: `TB năm ${y}` };
-    } else if (view.kind === 'aggregate' && view.agg === 'period') {
-        return { name: 'ALL', when: `TB ${info.months[0].substring(0, 4)}–${info.months[info.months.length - 1].substring(0, 4)}` };
+    if (view.kind !== 'aggregate') return null;
+    if (!view.start || !view.end) return null;
+    const month = view.start.slice(0, 7);
+    const year = month.slice(0, 4);
+    const last = lastDayOfMonth(Number(year), Number(month.slice(5)));
+    if (view.agg === 'month' && view.start === month + '-01' && view.end === month + '-' + last
+        && info.months.includes(month)) {
+        return { name: month.replace('-', '_'), when: `tổng hợp tháng ${month.slice(5)}/${month.slice(0, 4)}` };
+    }
+    if (view.agg === 'year' && view.start === year + '-01-01' && view.end === year + '-12-31') {
+        if (info.years.includes(year) && info.months.filter(m => m.startsWith(year + '-')).length === 12) {
+            return { name: `Y_${year}`, when: `trung bình đủ 12 tháng năm ${year}` };
+        }
     }
     return null;
 }
@@ -160,15 +165,14 @@ function resolvePixelSource(key, view) {
     if (img) {
         return { type: 'image', url: pixelUrl(key, img.name), label: `ảnh Landsat ${img.when} · pixel 120 m` };
     }
-    if (!info.detail || !month) return null;
+    // Historical views without a matching image use IDW from their own dated grid.
+    if (view.kind !== 'forecast' || !info.detail || !month) return null;
     const mm = month.substring(5, 7);
     return {
         type: 'downscale',
         url: pixelUrl(key, `DETAIL_${mm}`),
         detail: info.detail,
-        label: view.kind === 'forecast'
-            ? 'lưới dự báo ~5,5 km chi tiết hóa 120 m theo ảnh Landsat cùng tháng'
-            : 'lưới quan trắc ~5,5 km chi tiết hóa 120 m (tháng này không có ảnh Landsat)',
+        label: 'lưới dự báo ~5,5 km + chi tiết không gian Landsat cùng tháng nhiều năm',
     };
 }
 
@@ -213,12 +217,7 @@ async function buildPixelField(key, source) {
     } else {
         const grid = computeRasterGrid(key);
         if (!grid) return null;
-        let enc = null;
-        try {
-            enc = await decodePixelPng(source.url);
-        } catch (e) {
-            enc = null;
-        }
+        const enc = await decodePixelPng(source.url);
         const [dlo, dhi] = source.detail;
         const dk = (dhi - dlo) / 254;
         for (let y = 0; y < geo.h; y++) {

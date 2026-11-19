@@ -108,6 +108,7 @@ def _ensure_cloud_data_background():
     """Đồng bộ dữ liệu nền còn thiếu (dự báo 7 ngày, 12 tháng, ranh giới phường) ở luồng nền."""
     try:
         from ..scripts import migrate_schema_standard as mig
+        from ..scripts.monthly_model import VERSION
         from ..scripts.train_monthly_forecast import (
             generate_daily_7d_simulated,
             train_and_populate_monthly_12m,
@@ -133,8 +134,12 @@ def _ensure_cloud_data_background():
                 {"d0": today_dt},
             ).scalar() or 0
             m12_cnt = conn.execute(
-                text("SELECT COUNT(DISTINCT date) FROM tvdi.tvdi_forecast WHERE horizon_type = 'monthly_12m' AND date >= :m0"),
-                {"m0": m0},
+                text("""SELECT COUNT(DISTINCT f.date) FROM tvdi.tvdi_forecast f
+                        JOIN tvdi.model_runs r ON r.id = f.model_run_id
+                        WHERE f.horizon_type = 'monthly_12m' AND f.satellite_source = 'LANDSAT'
+                          AND r.model_version = :version AND r.is_active AND f.cell_id IS NOT NULL
+                          AND f.date >= :m0 AND f.date < CAST(:m0 AS date) + INTERVAL '12 months'"""),
+                {"m0": m0, "version": VERSION},
             ).scalar() or 0
 
         if m12_cnt < 12:

@@ -462,33 +462,15 @@ def get_12month_forecast_series(
     m_start = date(base_dt.year, base_dt.month, 1)
 
     def _query_rows():
-        if effective_cell_id is None:
-            return db.execute(
-                text("""
-                    SELECT date, ROUND(tvdi_pred::numeric, 3), ROUND(lst_pred::numeric, 2), ROUND(ndvi_pred::numeric, 3)
-                    FROM tvdi.tvdi_forecast
-                    WHERE cell_id IS NULL
-                      AND horizon_type = 'monthly_12m'
-                      AND satellite_source = :src
-                      AND date >= :s
-                    ORDER BY date ASC
-                    LIMIT 12
-                """),
-                {"src": src, "s": m_start},
-            ).fetchall()
-        return db.execute(
-            text("""
-                SELECT date, ROUND(tvdi_pred::numeric, 3), ROUND(lst_pred::numeric, 2), ROUND(ndvi_pred::numeric, 3)
-                FROM tvdi.tvdi_forecast
-                WHERE cell_id = :cid
-                  AND horizon_type = 'monthly_12m'
-                  AND satellite_source = :src
-                  AND date >= :s
-                ORDER BY date ASC
-                LIMIT 12
-            """),
-            {"cid": effective_cell_id, "src": src, "s": m_start},
-        ).fetchall()
+        scope = "cell_id IS NULL" if effective_cell_id is None else "cell_id = :cid"
+        return db.execute(text(f"""
+            SELECT date, ROUND(tvdi_pred::numeric, 3), ROUND(lst_pred::numeric, 2),
+                   ROUND(ndvi_pred::numeric, 3), model_run_id
+            FROM tvdi.tvdi_forecast
+            WHERE {scope} AND horizon_type = 'monthly_12m' AND satellite_source = :src
+              AND date >= :s
+            ORDER BY date LIMIT 12
+        """), {"cid": effective_cell_id, "src": src, "s": m_start}).fetchall()
 
     rows = _query_rows()
     if not rows:
@@ -496,7 +478,7 @@ def get_12month_forecast_series(
         train_and_populate_monthly_12m(m_start)
         rows = _query_rows()
 
-    return _build_horizon_series_payload(
+    payload = _build_horizon_series_payload(
         db=db,
         rows=rows,
         effective_cell_id=effective_cell_id,
@@ -505,6 +487,14 @@ def get_12month_forecast_series(
         source_label="Dự báo AI Random Forest 12 tháng (Landsat)",
         is_monthly=True,
     )
+    runs = {row[4] for row in rows}
+    evaluation = None
+    if len(runs) == 1 and None not in runs:
+        evaluation = db.execute(text("SELECT metrics_json FROM tvdi.model_runs WHERE id = :id"),
+                                {"id": runs.pop()}).scalar()
+    payload["monthly_evaluation"] = evaluation if evaluation and "indices" in evaluation else None
+    return payload
+
 
 
 @router.get("/series/15days")

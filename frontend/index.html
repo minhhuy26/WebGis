@@ -442,6 +442,15 @@
                             </button>
                         </div>
 
+                        <details id="monthly-validation" class="monthly-validation" hidden>
+                            <summary id="monthly-validation-summary">Kiểm định dự báo tháng</summary>
+                            <p id="monthly-validation-note"></p>
+                            <table>
+                                <caption>Sai số theo số tháng kể từ quan trắc cuối</caption>
+                                <thead><tr><th>Tháng</th><th>R²</th><th>RMSE</th><th>MAE</th></tr></thead>
+                                <tbody id="monthly-validation-rows"></tbody>
+                            </table>
+                        </details>
                         <div class="chart-location-bar" id="chart-location-bar" style="display: none;">
                             <div class="chart-loc-left">
                                 <i class="fa-solid fa-location-dot loc-pin"></i>
@@ -764,7 +773,7 @@
                 </div>
 
                 <div class="ai-modal-section" style="margin-top: 14px;">
-                    <h4 style="font-size: 0.88rem; font-weight: 700; color: #1e293b; margin-bottom: 8px;">1. Chỉ số đánh giá độ chính xác (Tập Test 2024–2025):</h4>
+                    <h4 style="font-size: 0.88rem; font-weight: 700; color: #1e293b; margin-bottom: 8px;">1. Kiểm định TVDI theo kỳ 15 ngày (2024–2025)</h4>
                     <table class="ai-eval-table" style="width: 100%; border-collapse: collapse; font-size: 0.82rem;">
                         <thead>
                             <tr style="background: #f1f5f9; text-align: left;">

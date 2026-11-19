@@ -526,7 +526,6 @@ function renderComposedMapCanvas(targetCanvas, overrideScale = null) {
 
 function _mcDrawMetaPanel(ctx, x, y, w, availH, cfg) {
     const h = Math.max(125, Math.min(availH, 230));
-    const dStr = state.currentDate || '--';
     const meta = INDEX_META[cfg.layerKey] || INDEX_META.tvdi;
 
     ctx.save();
@@ -549,14 +548,14 @@ function _mcDrawMetaPanel(ctx, x, y, w, availH, cfg) {
 
     const now = new Date();
     const exportDate = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
-    const isAdmin = (typeof isAdminUser === 'function') ? isAdminUser() : false;
+    const period = cfg.displayMode === 'ward' ? wardPeriodLabel(state.wards.source) : describeCurrentView(true);
     const lines = [
         `Hệ thống: Giám sát Mức độ Khô hạn tại TP.HCM`,
         `Hệ tọa độ: WGS 84 (EPSG:4326)`,
         `Chỉ số chính: ${meta.label}`,
-        `Mốc dữ liệu: ${dStr}`,
+        `Mốc dữ liệu: ${period || 'Chưa có dữ liệu'}`,
         `Thể hiện: ${cfg.displayMode === 'ward' ? 'Theo 167 Phường/Xã' : 'Raster bề mặt liên tục'}`,
-        ...(isAdmin ? [`Nguồn ảnh: Landsat 8/9 · GEE`] : []),
+        cfg.displayMode === 'ward' ? 'Nguồn: bảng phường/xã' : 'Nguồn: nội suy từ lưới của kỳ đã chọn',
         `Ngày xuất: ${exportDate}`,
     ];
 

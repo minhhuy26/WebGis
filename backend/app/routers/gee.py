@@ -111,6 +111,8 @@ def get_tile(
             datetime.strptime(value, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Ngày '{value}' phải có định dạng YYYY-MM-DD.")
+    if end and end < date_str:
+        raise HTTPException(status_code=400, detail="Ngày kết thúc phải từ ngày bắt đầu trở đi.")
     if vmin is not None and vmax is not None and vmin >= vmax:
         raise HTTPException(status_code=400, detail="vmin phải nhỏ hơn vmax.")
 
