@@ -8,14 +8,14 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..services.tvdi_service import get_drought_class
-from .auth import decode_token, record_activity
+from .auth import get_client_ip, get_current_user, record_activity
 
 router = APIRouter(prefix="/api/bulletins", tags=["Bản tin & Báo cáo"])
 
@@ -40,34 +40,26 @@ def _parse_date(val: Optional[str], fallback: date) -> date:
         return fallback
 
 
-def _optional_username(authorization: Optional[str]) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        return "system"
-    payload = decode_token(authorization[7:])
-    if payload and payload.get("sub"):
-        return str(payload["sub"])
-    return "system"
-
-
-def _is_admin_request(authorization: Optional[str]) -> bool:
-    if not authorization:
-        return False
-    parts = authorization.strip().split()
-    token = parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else parts[0]
-    payload = decode_token(token)
-    return bool(payload and payload.get("role") == "admin")
-
-
 def _sanitize_bulletin_text(val: Optional[str]) -> str:
     raw = str(val or "")
     if not raw:
         return ""
     cleaned = re.sub(r"\s*\(AI Random Forest\)", "", raw, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*\(Giả lập(?:\s*[·\-]\s*Landsat(?:\s*8/9)?)?\)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\s*\(Giả lập(?:\s*[·\-]\s*Landsat(?:\s*8/9)?)?\)",
+        " (Mô phỏng tham khảo)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"\(Kỳ\s+Landsat\s+", "(Kỳ ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"Dự báo\s+AI\s+Random Forest", "Dự báo", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"Quan trắc\s+vệ tinh\s+Landsat(?:\s*8/9)?", "Quan trắc", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*Số liệu dự báo 7 ngày được mô phỏng giả lập[^.]*\.", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"Số liệu dự báo 7 ngày được mô phỏng giả lập[^.]*\.",
+        "Số liệu dự báo 7 ngày là dữ liệu mô phỏng tham khảo cho theo dõi ngắn hạn.",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"\s*Số liệu dự báo 12 tháng được tính toán từ mô hình AI Random Forest[^.]*\.", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*Số liệu quan trắc thực tế từ ảnh viễn thám Landsat[^.]*\.", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*theo chu kỳ vệ tinh(?=\s)", "", cleaned, flags=re.IGNORECASE)
@@ -152,7 +144,7 @@ def build_bulletin_draft(
             text("""
                 SELECT cell_id, tvdi_pred, lst_pred, ndvi_pred
                 FROM tvdi.tvdi_forecast
-                WHERE date = :d AND horizon_type = :h AND cell_id IS NOT NULL
+                WHERE date = :d AND horizon_type = :h AND satellite_source = 'LANDSAT' AND cell_id IS NOT NULL
             """),
             {"d": dt, "h": horizon_norm},
         ).fetchall()
@@ -162,7 +154,7 @@ def build_bulletin_draft(
                 SELECT w.ward_id, w.name, w.district, wf.tvdi_pred, wf.lst_pred, wf.ndvi_pred, wf.drought_level
                 FROM tvdi.ward_forecasts wf
                 JOIN tvdi.wards w ON w.ward_id = wf.ward_id
-                WHERE wf.target_date = :d AND wf.horizon_type = :h AND wf.tvdi_pred IS NOT NULL
+                WHERE wf.target_date = :d AND wf.horizon_type = :h AND wf.satellite_source = 'LANDSAT' AND wf.tvdi_pred IS NOT NULL
                 ORDER BY wf.tvdi_pred DESC
                 LIMIT 10
             """),
@@ -173,7 +165,7 @@ def build_bulletin_draft(
             text("""
                 SELECT date, AVG(tvdi_pred), AVG(lst_pred), AVG(ndvi_pred)
                 FROM tvdi.tvdi_forecast
-                WHERE horizon_type = :h AND cell_id IS NOT NULL
+                WHERE horizon_type = :h AND satellite_source = 'LANDSAT' AND cell_id IS NOT NULL
                   AND date >= :d0
                 GROUP BY date
                 ORDER BY date ASC
@@ -188,7 +180,7 @@ def build_bulletin_draft(
             text("""
                 SELECT cell_id, AVG(tvdi), AVG(lst_c), AVG(ndvi)
                 FROM tvdi.tvdi_grid
-                WHERE date >= :s AND date <= :e AND tvdi IS NOT NULL
+                WHERE date >= :s AND date <= :e AND satellite_source = 'LANDSAT' AND tvdi IS NOT NULL
                 GROUP BY cell_id
             """),
             {"s": s_dt, "e": e_dt},
@@ -198,30 +190,43 @@ def build_bulletin_draft(
                 SELECT w.ward_id, w.name, w.district, AVG(wo.tvdi) AS tv, AVG(wo.lst_c), AVG(wo.ndvi), NULL
                 FROM tvdi.ward_observations wo
                 JOIN tvdi.wards w ON w.ward_id = wo.ward_id
-                WHERE wo.date >= :s AND wo.date <= :e AND wo.tvdi IS NOT NULL
+                WHERE wo.date >= :s AND wo.date <= :e AND wo.satellite_source = 'LANDSAT' AND wo.tvdi IS NOT NULL
                 GROUP BY w.ward_id, w.name, w.district
                 ORDER BY tv DESC
                 LIMIT 10
             """),
             {"s": s_dt, "e": e_dt},
         ).fetchall()
-        series_rows = db.execute(
-            text("""
-                SELECT date, AVG(tvdi), AVG(lst_c), AVG(ndvi)
-                FROM tvdi.tvdi_grid
-                WHERE date >= :s AND date <= :e AND tvdi IS NOT NULL
-                GROUP BY date
-                ORDER BY date ASC
-                LIMIT 12
-            """),
-            {"s": s_dt, "e": e_dt},
-        ).fetchall()
+        if (e_dt - s_dt).days > 90:
+            series_rows = db.execute(
+                text("""
+                    SELECT date_trunc('month', date)::date AS mdate, AVG(tvdi), AVG(lst_c), AVG(ndvi)
+                    FROM tvdi.tvdi_grid
+                    WHERE date >= :s AND date <= :e AND satellite_source = 'LANDSAT' AND tvdi IS NOT NULL
+                    GROUP BY mdate
+                    ORDER BY mdate ASC
+                    LIMIT 120
+                """),
+                {"s": s_dt, "e": e_dt},
+            ).fetchall()
+        else:
+            series_rows = db.execute(
+                text("""
+                    SELECT date, AVG(tvdi), AVG(lst_c), AVG(ndvi)
+                    FROM tvdi.tvdi_grid
+                    WHERE date >= :s AND date <= :e AND satellite_source = 'LANDSAT' AND tvdi IS NOT NULL
+                    GROUP BY date
+                    ORDER BY date ASC
+                    LIMIT 36
+                """),
+                {"s": s_dt, "e": e_dt},
+            ).fetchall()
     else:
         grid_rows = db.execute(
             text("""
                 SELECT cell_id, tvdi, lst_c, ndvi
                 FROM tvdi.tvdi_grid
-                WHERE date = :d AND tvdi IS NOT NULL
+                WHERE date = :d AND satellite_source = 'LANDSAT' AND tvdi IS NOT NULL
             """),
             {"d": dt},
         ).fetchall()
@@ -230,7 +235,7 @@ def build_bulletin_draft(
                 SELECT w.ward_id, w.name, w.district, wo.tvdi, wo.lst_c, wo.ndvi, wo.drought_level
                 FROM tvdi.ward_observations wo
                 JOIN tvdi.wards w ON w.ward_id = wo.ward_id
-                WHERE wo.date = :d AND wo.tvdi IS NOT NULL
+                WHERE wo.date = :d AND wo.satellite_source = 'LANDSAT' AND wo.tvdi IS NOT NULL
                 ORDER BY wo.tvdi DESC
                 LIMIT 10
             """),
@@ -240,7 +245,7 @@ def build_bulletin_draft(
             text("""
                 SELECT date, AVG(tvdi), AVG(lst_c), AVG(ndvi)
                 FROM tvdi.tvdi_grid
-                WHERE date <= :d AND tvdi IS NOT NULL
+                WHERE date <= :d AND satellite_source = 'LANDSAT' AND tvdi IS NOT NULL
                 GROUP BY date
                 ORDER BY date DESC
                 LIMIT 8
@@ -464,18 +469,18 @@ def get_auto_bulletin_draft(
     horizon: str = Query("observed"),
     start: Optional[str] = None,
     end: Optional[str] = None,
-    authorization: Optional[str] = Header(None),
+    current_user: Dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Sinh bản nháp bản tin tự động từ dữ liệu PostGIS theo mốc/khung thời gian."""
     draft = build_bulletin_draft(db, target_date=date_str, horizon=horizon, start=start, end=end)
-    return draft if _is_admin_request(authorization) else _sanitize_bulletin_for_non_admin(draft)
+    return draft if current_user.get("is_admin") else _sanitize_bulletin_for_non_admin(draft)
 
 
 @router.get("")
 def list_bulletins(
     limit: int = 30,
-    authorization: Optional[str] = Header(None),
+    current_user: Dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Lấy danh sách các bản tin đã lưu trong CSDL (tvdi.bulletins)."""
@@ -491,7 +496,7 @@ def list_bulletins(
         """),
         {"lim": max(1, min(limit, 100))},
     ).fetchall()
-    is_admin = _is_admin_request(authorization)
+    is_admin = bool(current_user.get("is_admin"))
     items = [_serialize_bulletin_row(r) for r in rows]
     if not is_admin:
         items = [_sanitize_bulletin_for_non_admin(it) for it in items]
@@ -501,7 +506,7 @@ def list_bulletins(
 @router.get("/{bulletin_id}")
 def get_bulletin(
     bulletin_id: int,
-    authorization: Optional[str] = Header(None),
+    current_user: Dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Lấy chi tiết 1 bản tin theo ID."""
@@ -518,17 +523,20 @@ def get_bulletin(
     if not row:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản tin.")
     item = _serialize_bulletin_row(row)
-    return item if _is_admin_request(authorization) else _sanitize_bulletin_for_non_admin(item)
+    return item if current_user.get("is_admin") else _sanitize_bulletin_for_non_admin(item)
 
 
 @router.post("")
 def create_bulletin(
     payload: BulletinCreate,
-    authorization: Optional[str] = Header(None),
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Lưu bản tin mới vào CSDL (tvdi.bulletins)."""
-    username = _optional_username(authorization)
+    """Lưu bản tin mới vào CSDL (tvdi.bulletins). Yêu cầu đã đăng nhập."""
+    if not current_user or current_user.get("role") == "guest":
+        raise HTTPException(status_code=401, detail="Vui lòng đăng nhập để lưu bản tin.")
+    username = current_user["username"]
     ps = _parse_date(payload.period_start, date.today())
     pe = _parse_date(payload.period_end, ps)
 
@@ -568,29 +576,50 @@ def create_bulletin(
     ).fetchone()
     db.commit()
 
-    if username != "system":
-        record_activity(db, username, "Lưu bản tin TVDI", f"Đã lưu bản tin: {payload.title[:80]}")
+    record_activity(
+        db, username, "Lưu bản tin TVDI",
+        f"Đã lưu bản tin: {payload.title[:80]}",
+        ip_address=get_client_ip(request),
+    )
 
-    return {"message": "Đã lưu bản tin thành công.", "bulletin": _serialize_bulletin_row(row)}
+    item = _serialize_bulletin_row(row)
+    if not current_user.get("is_admin"):
+        item = _sanitize_bulletin_for_non_admin(item)
+    return {"message": "Đã lưu bản tin thành công.", "bulletin": item}
 
 
 @router.delete("/{bulletin_id}")
 def delete_bulletin(
     bulletin_id: int,
-    authorization: Optional[str] = Header(None),
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Xóa bản tin khỏi kho lưu trữ."""
-    username = _optional_username(authorization)
-    row = db.execute(
-        text("DELETE FROM tvdi.bulletins WHERE id = :bid RETURNING id, title"),
+    """Xóa bản tin khỏi kho lưu trữ (chỉ Quản trị viên hoặc người tạo bản tin)."""
+    if not current_user or current_user.get("role") == "guest":
+        raise HTTPException(status_code=401, detail="Vui lòng đăng nhập để xóa bản tin.")
+
+    existing = db.execute(
+        text("SELECT id, title, created_by FROM tvdi.bulletins WHERE id = :bid"),
         {"bid": bulletin_id},
     ).fetchone()
-    if not row:
+    if not existing:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản tin cần xóa.")
+
+    created_by = existing[2] or "system"
+    if not current_user.get("is_admin") and (created_by == "system" or created_by != current_user["username"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ Quản trị viên hoặc người tạo mới được xóa bản tin này.",
+        )
+
+    db.execute(text("DELETE FROM tvdi.bulletins WHERE id = :bid"), {"bid": bulletin_id})
     db.commit()
 
-    if username != "system":
-        record_activity(db, username, "Xóa bản tin TVDI", f"Xóa bản tin ID={bulletin_id}: {row[1]}")
+    record_activity(
+        db, current_user["username"], "Xóa bản tin TVDI",
+        f"Xóa bản tin ID={bulletin_id}: {existing[1]}",
+        ip_address=get_client_ip(request),
+    )
 
     return {"message": "Đã xóa bản tin.", "id": bulletin_id}

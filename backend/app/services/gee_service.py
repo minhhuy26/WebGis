@@ -6,6 +6,7 @@ Cung cấp Tile URL (XYZ) cho Leaflet để hiển thị ảnh viễn thám Land
 import os
 import json
 import logging
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from sqlalchemy import text
@@ -18,7 +19,9 @@ logger = logging.getLogger("gee_service")
 # Biến cờ trạng thái khởi tạo GEE
 _gee_initialized = False
 _gee_init_error = None
-_cached_tile_urls: Dict[str, str] = {}
+_cached_tile_urls: Dict[str, Any] = {}
+TILE_CACHE_TTL_SECONDS = 3600
+TILE_CACHE_MAX_SIZE = 128
 
 
 def has_credentials() -> bool:
@@ -409,8 +412,16 @@ def get_tile_url_for_date(
         end_date_str = (datetime.strptime(end_date_str, "%Y-%m-%d") + timedelta(days=1)).date().isoformat()
 
     cache_key = f"{src}_{layer_name}_{date_str}_{end_date_str}_{vis_min}_{vis_max}"
-    if cache_key in _cached_tile_urls:
-        return _cached_tile_urls[cache_key]
+    now_mono = time.monotonic()
+    cached_entry = _cached_tile_urls.get(cache_key)
+    if cached_entry is not None:
+        if isinstance(cached_entry, tuple) and len(cached_entry) == 2:
+            cached_url, expires_at = cached_entry
+            if expires_at > now_mono:
+                return cached_url
+            _cached_tile_urls.pop(cache_key, None)
+        elif isinstance(cached_entry, str):
+            return cached_entry
 
     if not init_earth_engine():
         return None
@@ -427,7 +438,17 @@ def get_tile_url_for_date(
     map_id = vis_image.getMapId()
     tile_url = map_id["tile_fetcher"].url_format
 
-    _cached_tile_urls[cache_key] = tile_url
+    if len(_cached_tile_urls) >= TILE_CACHE_MAX_SIZE:
+        expired_keys = [
+            k for k, v in _cached_tile_urls.items()
+            if isinstance(v, tuple) and len(v) == 2 and v[1] <= now_mono
+        ]
+        for k in expired_keys:
+            _cached_tile_urls.pop(k, None)
+        while len(_cached_tile_urls) >= TILE_CACHE_MAX_SIZE:
+            oldest_key = next(iter(_cached_tile_urls))
+            _cached_tile_urls.pop(oldest_key, None)
+    _cached_tile_urls[cache_key] = (tile_url, time.monotonic() + TILE_CACHE_TTL_SECONDS)
     return tile_url
 
 
@@ -616,9 +637,15 @@ def sync_gee_observation_to_db(
                 grid_records,
             )
 
-        reg_lst = _safe_float(reg_info.get("LST_C")) or (round(sum(lst_vals) / len(lst_vals), 3) if lst_vals else None)
-        reg_ndvi = _safe_float(reg_info.get("NDVI")) or (round(sum(ndvi_vals) / len(ndvi_vals), 4) if ndvi_vals else None)
-        reg_tvdi = _safe_float(reg_info.get("TVDI")) or (round(sum(tvdi_vals) / len(tvdi_vals), 4) if tvdi_vals else None)
+        reg_lst = _safe_float(reg_info.get("LST_C"))
+        if reg_lst is None and lst_vals:
+            reg_lst = round(sum(lst_vals) / len(lst_vals), 3)
+        reg_ndvi = _safe_float(reg_info.get("NDVI"))
+        if reg_ndvi is None and ndvi_vals:
+            reg_ndvi = round(sum(ndvi_vals) / len(ndvi_vals), 4)
+        reg_tvdi = _safe_float(reg_info.get("TVDI"))
+        if reg_tvdi is None and tvdi_vals:
+            reg_tvdi = round(sum(tvdi_vals) / len(tvdi_vals), 4)
         drought_pct = (
             round(sum(1 for v in tvdi_vals if v >= 0.625) / len(tvdi_vals) * 100.0, 2)
             if tvdi_vals else None

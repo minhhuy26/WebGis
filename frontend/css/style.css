@@ -46,7 +46,8 @@ body {
     align-items: center;
     border-bottom: 1px solid #334155;
     box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-    z-index: 1000;
+    position: relative;
+    z-index: 1800;
     min-height: 48px;
 }
 
@@ -199,6 +200,11 @@ body {
 
 .btn-secondary:hover {
     background-color: #e2e8f0;
+}
+
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 0.78rem;
 }
 
 .layer-toggles {
@@ -1685,7 +1691,7 @@ body {
     height: 100vh;
     background: rgba(15, 23, 42, 0.65);
     backdrop-filter: blur(4px);
-    z-index: 2000;
+    z-index: 10000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2233,12 +2239,17 @@ body {
     .workspace,
     #gee-modal,
     #ai-modal,
+    #login-modal,
+    #register-modal,
+    #change-pwd-modal,
+    #admin-users-modal,
+    #admin-reset-pwd-modal,
     .modal-header,
     .modal-footer,
     .fab-mobile-sheet {
         display: none !important;
     }
-    #report-modal {
+    body:not(.printing-map-composer):not(.printing-tree-benefit) #report-modal {
         position: static !important;
         display: block !important;
         background: transparent !important;
@@ -2247,7 +2258,7 @@ body {
         height: auto !important;
         backdrop-filter: none !important;
     }
-    #report-modal .modal-dialog {
+    body:not(.printing-map-composer):not(.printing-tree-benefit) #report-modal .modal-dialog {
         max-width: 100% !important;
         width: 100% !important;
         box-shadow: none !important;
@@ -3007,7 +3018,7 @@ body {
     font-size: 0.85rem;
     font-weight: 500;
     box-shadow: 0 8px 24px rgba(0,0,0,0.25);
-    z-index: 9999;
+    z-index: 20000;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -4694,6 +4705,11 @@ body {
     animation: searchDrop 0.14s ease-out;
 }
 
+.ward-search-dropdown.is-fixed {
+    position: fixed;
+    right: auto;
+}
+
 @keyframes searchDrop {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
@@ -5748,7 +5764,8 @@ body:not(.is-admin) .admin-tech-only {
 
 @media print {
     body.printing-map-composer #report-modal,
-    body.printing-map-composer #map-composer-modal {
+    body.printing-map-composer #map-composer-modal,
+    body.printing-map-composer #tree-benefit-modal {
         display: none !important;
     }
     body.printing-map-composer #mc-print-sheet {
@@ -5763,6 +5780,39 @@ body:not(.is-admin) .admin-tech-only {
         height: auto;
         object-fit: contain;
     }
+    body.printing-tree-benefit #report-modal,
+    body.printing-tree-benefit #map-composer-modal,
+    body.printing-tree-benefit #mc-print-sheet,
+    body.printing-tree-benefit .tb-footer-left,
+    body.printing-tree-benefit .tb-close-btn,
+    body.printing-tree-benefit .tb-right-tabs,
+    body.printing-tree-benefit #btn-tb-calculate,
+    body.printing-tree-benefit #btn-tb-reset {
+        display: none !important;
+    }
+    body.printing-tree-benefit #tree-benefit-modal {
+        position: static !important;
+        display: block !important;
+        overflow: visible !important;
+        height: auto !important;
+        width: 100% !important;
+        background: transparent !important;
+        padding: 0 !important;
+        backdrop-filter: none !important;
+    }
+    body.printing-tree-benefit #tree-benefit-modal .modal-dialog,
+    body.printing-tree-benefit .tb-modal-body {
+        max-width: 100% !important;
+        width: 100% !important;
+        max-height: none !important;
+        overflow: visible !important;
+        box-shadow: none !important;
+        border: none !important;
+        margin: 0 !important;
+    }
+    body.printing-tree-benefit #tree-benefit-modal .tb-modal-header {
+        display: flex !important;
+    }
 }
 
 
@@ -5772,15 +5822,16 @@ body:not(.is-admin) .admin-tech-only {
    ========================================================================== */
 
 .btn-header-highlight {
-    background: linear-gradient(135deg, rgba(22, 163, 74, 0.15), rgba(34, 197, 94, 0.25)) !important;
-    border: 1px solid rgba(22, 163, 74, 0.4) !important;
-    color: #15803d !important;
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.22), rgba(16, 185, 129, 0.30)) !important;
+    border: 1px solid rgba(74, 222, 128, 0.55) !important;
+    color: #bbf7d0 !important;
     font-weight: 600 !important;
 }
 
 .btn-header-highlight:hover {
-    background: linear-gradient(135deg, rgba(22, 163, 74, 0.25), rgba(34, 197, 94, 0.35)) !important;
-    border-color: #16a34a !important;
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.34), rgba(16, 185, 129, 0.44)) !important;
+    border-color: #4ade80 !important;
+    color: #ffffff !important;
 }
 
 .tree-benefit-dialog {
@@ -6609,3 +6660,104 @@ body:not(.is-admin) .admin-tech-only {
 .monthly-validation table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .monthly-validation caption { text-align: left; }
 .monthly-validation th, .monthly-validation td { padding: .2rem .4rem; text-align: right; border-bottom: 1px solid #cbd5e1; }
+.monthly-validation.is-weak {
+    background: #fffbeb;
+    border: 1px solid #f59e0b;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+.monthly-validation.is-weak summary {
+    color: #92400e;
+}
+
+/* --- Modal form controls, login/change-password/admin reset dialogs --- */
+.login-dialog {
+    max-width: 440px;
+}
+
+.form-control {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-family: inherit;
+    color: #0f172a;
+    background: #ffffff;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.form-control:focus {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.login-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.login-field label {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: #1e293b;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.login-field input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-family: inherit;
+    color: #0f172a;
+    background: #ffffff;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.login-field input:focus {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.login-alert {
+    padding: 9px 12px;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    margin-bottom: 12px;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    color: #334155;
+}
+
+.login-alert.warning {
+    background: #fffbeb;
+    border-color: #fcd34d;
+    color: #92400e;
+}
+
+.login-alert.error {
+    background: #fef2f2;
+    border-color: #fca5a5;
+    color: #b91c1c;
+}
+
+.login-alert.success {
+    background: #f0fdf4;
+    border-color: #86efac;
+    color: #166534;
+}
+
+.login-alert.info {
+    background: #eff6ff;
+    border-color: #93c5fd;
+    color: #1d4ed8;
+}

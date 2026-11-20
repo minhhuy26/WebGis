@@ -7,37 +7,86 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
+import os
+import re
+import secrets
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..database import get_db
 
 router = APIRouter(prefix="/api/auth", tags=["Xác thực & Phân quyền"])
+logger = logging.getLogger("auth")
 
-SECRET_KEY = b"tvdi_webgis_secret_key_2026_hcm_secure"
+_raw_secret = (
+    os.getenv("AUTH_SECRET_KEY")
+    or os.getenv("SECRET_KEY")
+    or settings.AUTH_SECRET_KEY
+    or ""
+).strip()
+if _raw_secret:
+    SECRET_KEY = _raw_secret.encode("utf-8")
+else:
+    SECRET_KEY = secrets.token_bytes(32)
+    logger.warning("AUTH_SECRET_KEY chưa được cấu hình; sử dụng khóa tạm thời cho phiên hiện tại.")
+
 TOKEN_EXPIRY_SECONDS = 86400 * 7  # 7 ngày
+PBKDF2_ITERATIONS = 260000
+PBKDF2_PREFIX = "pbkdf2_sha256"
+USERNAME_RE = re.compile(r"^[a-z0-9_.-]{3,30}$")
 
-# Danh sách tài khoản mặc định (fallback in-memory)
-USERS_DB = {
-    "admin": {
-        "password_hash": hashlib.sha256("admin123".encode()).hexdigest(),
-        "role": "admin",
-        "full_name": "Quản trị viên Hệ thống",
-        "permissions": ["view", "stats", "export", "gee_manage", "ai_train", "system_admin"],
-        "is_blocked": False
-    },
-    "user": {
-        "password_hash": hashlib.sha256("user123".encode()).hexdigest(),
-        "role": "user",
-        "full_name": "Người dùng Mẫu",
-        "permissions": ["view", "stats", "export"],
-        "is_blocked": False
-    },
-}
+
+def hash_password(password: str) -> str:
+    """Băm mật khẩu bằng PBKDF2-HMAC-SHA256 kèm salt ngẫu nhiên 16 byte."""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return f"{PBKDF2_PREFIX}${PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> Tuple[bool, bool]:
+    """Kiểm tra mật khẩu; trả về (hợp lệ, cần băm lại sang PBKDF2)."""
+    if not stored_hash or password is None:
+        return False, False
+    if stored_hash.startswith(f"{PBKDF2_PREFIX}$"):
+        try:
+            _, iter_str, salt_hex, dk_hex = stored_hash.split("$", 3)
+            iterations = int(iter_str)
+            salt = bytes.fromhex(salt_hex)
+            expected_dk = bytes.fromhex(dk_hex)
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+            return hmac.compare_digest(dk, expected_dk), False
+        except Exception:
+            return False, False
+    if len(stored_hash) == 64:
+        legacy_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        if hmac.compare_digest(legacy_hash, stored_hash):
+            return True, True
+        stripped = password.strip()
+        if stripped != password:
+            legacy_stripped = hashlib.sha256(stripped.encode("utf-8")).hexdigest()
+            if hmac.compare_digest(legacy_stripped, stored_hash):
+                return True, True
+    return False, False
+
+
+def get_client_ip(request: Optional[Request] = None) -> str:
+    """Lấy địa chỉ IP thực của client (hỗ trợ proxy X-Forwarded-For)."""
+    if request is None:
+        return "unknown"
+    forwarded = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
+    if forwarded:
+        first_ip = forwarded.split(",")[0].strip()
+        if first_ip:
+            return first_ip[:64]
+    if request.client and request.client.host:
+        return str(request.client.host)[:64]
+    return "unknown"
 
 
 def create_token(username: str, role: str) -> str:
@@ -81,7 +130,12 @@ def record_activity(db: Session, username: str, action: str, details: str = "", 
                 INSERT INTO tvdi.user_activities (username, action, details, ip_address, created_at)
                 VALUES (:u, :a, :d, :ip, CURRENT_TIMESTAMP)
             """),
-            {"u": username, "a": action, "d": details, "ip": ip_address or "127.0.0.1"}
+            {
+                "u": (username or "unknown")[:50],
+                "a": (action or "")[:120],
+                "d": (details or "")[:1000],
+                "ip": (ip_address or "unknown")[:64],
+            }
         )
         db.commit()
     except Exception:
@@ -89,74 +143,72 @@ def record_activity(db: Session, username: str, action: str, details: str = "", 
 
 
 def find_user_record(username: str, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
-    """Tìm thông tin user từ PostgreSQL tvdi.users hoặc USERS_DB."""
+    """Tìm thông tin user từ PostgreSQL tvdi.users."""
+    if db is None or not username:
+        return None
     u_clean = username.strip().lower()
-    if db is not None:
+    if not u_clean:
+        return None
+    try:
+        row = db.execute(
+            text("""
+                SELECT username, password_hash, full_name, role, 
+                       COALESCE(is_blocked, FALSE) AS is_blocked,
+                       last_login, created_at
+                FROM tvdi.users 
+                WHERE LOWER(username) = LOWER(:u) LIMIT 1
+            """),
+            {"u": u_clean}
+        ).fetchone()
+        if row:
+            r_role = row[3]
+            perms = ["view", "stats", "export", "gee_manage", "ai_train", "system_admin"] if r_role == "admin" else ["view", "stats", "export"]
+            return {
+                "username": row[0],
+                "password_hash": row[1],
+                "full_name": row[2],
+                "role": r_role,
+                "permissions": perms,
+                "is_blocked": bool(row[4]),
+                "last_login": row[5].strftime("%d/%m/%Y %H:%M") if row[5] else None,
+                "created_at": row[6].strftime("%d/%m/%Y %H:%M") if row[6] else None,
+            }
+    except Exception:
         try:
-            row = db.execute(
-                text("""
-                    SELECT username, password_hash, full_name, role, 
-                           COALESCE(is_blocked, FALSE) AS is_blocked,
-                           last_login, created_at
-                    FROM tvdi.users 
-                    WHERE LOWER(username) = LOWER(:u) LIMIT 1
-                """),
-                {"u": u_clean}
-            ).fetchone()
-            if row:
-                r_role = row[3]
-                perms = ["view", "stats", "export", "gee_manage", "ai_train", "system_admin"] if r_role == "admin" else ["view", "stats", "export"]
-                return {
-                    "username": row[0],
-                    "password_hash": row[1],
-                    "full_name": row[2],
-                    "role": r_role,
-                    "permissions": perms,
-                    "is_blocked": bool(row[4]),
-                    "last_login": row[5].strftime("%d/%m/%Y %H:%M") if row[5] else None,
-                    "created_at": row[6].strftime("%d/%m/%Y %H:%M") if row[6] else None,
-                }
+            db.rollback()
         except Exception:
             pass
-
-    fallback = USERS_DB.get(u_clean)
-    if fallback:
-        return {
-            **fallback,
-            "username": u_clean,
-            "is_blocked": fallback.get("is_blocked", False),
-            "last_login": fallback.get("last_login"),
-            "created_at": None,
-        }
     return None
+
+
+def _guest_user() -> Dict[str, Any]:
+    return {
+        "username": "guest",
+        "role": "guest",
+        "full_name": "Người dùng",
+        "is_admin": False,
+        "permissions": ["view", "stats", "export"],
+    }
 
 
 def get_current_user(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Dependency: lấy thông tin user hiện tại từ Bearer token."""
     if not authorization:
-        return {
-            "username": "guest",
-            "role": "guest",
-            "full_name": "Người dùng",
-            "is_admin": False,
-            "permissions": ["view", "stats", "export"],
-        }
-    
+        return _guest_user()
+
     parts = authorization.strip().split()
     token = parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else parts[0]
     payload = decode_token(token)
     if not payload:
-        return {
-            "username": "guest",
-            "role": "guest",
-            "full_name": "Người dùng",
-            "is_admin": False,
-            "permissions": ["view", "stats", "export"],
-        }
-    
-    username = payload.get("sub", "guest")
-    user_info = find_user_record(username, db) or {}
-    
+        return _guest_user()
+
+    username = payload.get("sub")
+    if not username:
+        return _guest_user()
+    user_info = find_user_record(str(username), db)
+    if not user_info:
+        return _guest_user()
+
     # Kiểm tra xem user có bị Admin chặn không
     if user_info.get("is_blocked"):
         raise HTTPException(
@@ -164,13 +216,13 @@ def get_current_user(authorization: Optional[str] = Header(None), db: Session = 
             detail="Tài khoản của bạn đã bị khóa bởi Quản trị viên."
         )
 
-    role = user_info.get("role", payload.get("role", "user"))
+    role = user_info["role"]
     return {
-        "username": username,
+        "username": user_info["username"],
         "role": role,
-        "full_name": user_info.get("full_name", username),
+        "full_name": user_info.get("full_name", user_info["username"]),
         "is_admin": role == "admin",
-        "is_blocked": user_info.get("is_blocked", False),
+        "is_blocked": False,
         "permissions": user_info.get("permissions", ["view", "stats", "export"]),
     }
 
@@ -221,6 +273,7 @@ class LoginResponse(BaseModel):
     success: bool
     message: str
     token: Optional[str] = None
+    username: Optional[str] = None
     role: str
     full_name: str
     permissions: List[str]
@@ -229,21 +282,24 @@ class LoginResponse(BaseModel):
 # ---- Endpoints ----
 
 @router.post("/register", response_model=LoginResponse)
-def register(req: RegisterRequest, db: Session = Depends(get_db)):
+def register(req: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     """Đăng ký tài khoản người dùng mới (User)."""
     uname = req.username.strip().lower()
-    if len(uname) < 3 or len(uname) > 30:
-        raise HTTPException(status_code=400, detail="Tên đăng nhập phải có từ 3 đến 30 ký tự.")
+    if not USERNAME_RE.match(uname):
+        raise HTTPException(
+            status_code=400,
+            detail="Tên đăng nhập phải dài 3–30 ký tự, chỉ gồm chữ thường, số và '.', '_', '-'.",
+        )
     if not req.password or len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Mật khẩu phải có ít nhất 6 ký tự.")
-    
+
     # Kiểm tra trùng lặp
     existing = find_user_record(uname, db)
     if existing:
         raise HTTPException(status_code=400, detail="Tên đăng nhập này đã tồn tại trên hệ thống. Vui lòng chọn tên khác.")
-    
-    pwd_hash = hashlib.sha256(req.password.strip().encode()).hexdigest()
-    full_name = (req.full_name or uname).strip()
+
+    pwd_hash = hash_password(req.password)
+    full_name = re.sub(r"[\x00-\x1f\x7f]", "", (req.full_name or uname)).strip()[:80]
     if not full_name:
         full_name = uname
 
@@ -260,13 +316,15 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Lỗi khi lưu tài khoản vào cơ sở dữ liệu: {str(e)}")
 
-    record_activity(db, uname, "Đăng ký tài khoản", f"Đăng ký tài khoản mới thành công (Họ tên: {full_name})")
+    ip = get_client_ip(request)
+    record_activity(db, uname, "Đăng ký tài khoản", f"Đăng ký tài khoản mới thành công (Họ tên: {full_name})", ip_address=ip)
 
     token = create_token(uname, "user")
     return LoginResponse(
         success=True,
         message=f"Đăng ký tài khoản thành công! Chào mừng {full_name} đến với hệ thống WebGIS.",
         token=token,
+        username=uname,
         role="user",
         full_name=full_name,
         permissions=["view", "stats", "export"]
@@ -274,45 +332,60 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """Đăng nhập hệ thống (cho cả Người dùng và Quản trị viên)."""
     uname = req.username.strip().lower()
+    ip = get_client_ip(request)
     user_record = find_user_record(uname, db)
     if not user_record:
-        record_activity(db, uname, "Đăng nhập thất bại", "Tên đăng nhập không tồn tại")
+        record_activity(db, uname, "Đăng nhập thất bại", "Tên đăng nhập không tồn tại", ip_address=ip)
         raise HTTPException(status_code=400, detail="Tên đăng nhập hoặc mật khẩu không chính xác.")
-    
+
     # Kiểm tra xem tài khoản có bị khóa không
     if user_record.get("is_blocked"):
-        record_activity(db, uname, "Đăng nhập bị từ chối", "Tài khoản đang bị khóa cố gắng đăng nhập")
+        record_activity(db, uname, "Đăng nhập bị từ chối", "Tài khoản đang bị khóa cố gắng đăng nhập", ip_address=ip)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Tài khoản này đã bị Quản trị viên khóa. Vui lòng liên hệ ban quản trị để được mở lại."
         )
 
-    input_hash = hashlib.sha256(req.password.strip().encode()).hexdigest()
-    if input_hash != user_record["password_hash"]:
-        record_activity(db, uname, "Đăng nhập thất bại", "Sai mật khẩu")
+    valid, needs_rehash = verify_password(req.password, user_record["password_hash"])
+    if not valid:
+        record_activity(db, uname, "Đăng nhập thất bại", "Sai mật khẩu", ip_address=ip)
         raise HTTPException(status_code=400, detail="Tên đăng nhập hoặc mật khẩu không chính xác.")
-    
-    # Cập nhật thời gian đăng nhập gần nhất
+
+    # Cập nhật thời gian đăng nhập gần nhất (và nâng cấp hash cũ lên PBKDF2 nếu cần)
     try:
-        db.execute(
-            text("UPDATE tvdi.users SET last_login = CURRENT_TIMESTAMP WHERE LOWER(username) = LOWER(:u)"),
-            {"u": uname}
-        )
+        if needs_rehash:
+            raw_legacy = hashlib.sha256(req.password.encode("utf-8")).hexdigest()
+            pwd_to_hash = (
+                req.password
+                if hmac.compare_digest(raw_legacy, user_record["password_hash"])
+                else req.password.strip()
+            )
+            new_hash = hash_password(pwd_to_hash)
+            db.execute(
+                text("UPDATE tvdi.users SET last_login = CURRENT_TIMESTAMP, password_hash = :p WHERE LOWER(username) = LOWER(:u)"),
+                {"u": uname, "p": new_hash}
+            )
+        else:
+            db.execute(
+                text("UPDATE tvdi.users SET last_login = CURRENT_TIMESTAMP WHERE LOWER(username) = LOWER(:u)"),
+                {"u": uname}
+            )
         db.commit()
     except Exception:
         db.rollback()
 
     role_label = "Quản trị viên" if user_record["role"] == "admin" else "Người dùng"
-    record_activity(db, user_record["username"], "Đăng nhập hệ thống", f"Đăng nhập phiên {role_label} thành công")
+    record_activity(db, user_record["username"], "Đăng nhập hệ thống", f"Đăng nhập phiên {role_label} thành công", ip_address=ip)
 
     token = create_token(user_record["username"], user_record["role"])
     return LoginResponse(
         success=True,
         message=f"Đăng nhập thành công với vai trò {role_label} ({user_record['full_name']})!",
         token=token,
+        username=user_record["username"],
         role=user_record["role"],
         full_name=user_record["full_name"],
         permissions=user_record["permissions"],
@@ -326,54 +399,67 @@ def get_me(user: Dict[str, Any] = Depends(get_current_user)):
 
 
 @router.post("/change-password")
-def change_password(req: ChangePasswordRequest, current_user: Dict[str, Any] = Depends(get_current_user), db: Session = Depends(get_db)):
+def change_password(
+    req: ChangePasswordRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Đổi mật khẩu người dùng."""
     if not current_user or current_user.get("role") == "guest":
         raise HTTPException(status_code=401, detail="Vui lòng đăng nhập để thực hiện đổi mật khẩu.")
-    if len(req.new_password.strip()) < 6:
+    if not req.new_password or len(req.new_password) < 6:
         raise HTTPException(status_code=400, detail="Mật khẩu mới phải có ít nhất 6 ký tự.")
-    
-    old_hash = hashlib.sha256(req.old_password.strip().encode()).hexdigest()
+
     user_record = find_user_record(current_user["username"], db)
-    if not user_record or user_record["password_hash"] != old_hash:
+    valid, _ = verify_password(req.old_password, user_record["password_hash"]) if user_record else (False, False)
+    if not valid:
         raise HTTPException(status_code=400, detail="Mật khẩu hiện tại không chính xác.")
-    
-    new_hash = hashlib.sha256(req.new_password.strip().encode()).hexdigest()
-    if db is not None:
-        try:
-            db.execute(
-                text("UPDATE tvdi.users SET password_hash = :p WHERE LOWER(username) = LOWER(:u)"),
-                {"p": new_hash, "u": current_user["username"]}
-            )
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(status_code=500, detail=f"Lỗi cơ sở dữ liệu: {str(e)}")
-            
-    if current_user["username"].lower() in USERS_DB:
-        USERS_DB[current_user["username"].lower()]["password_hash"] = new_hash
-        
-    record_activity(db, current_user["username"], "Đổi mật khẩu", "Người dùng tự cập nhật mật khẩu thành công")
+
+    new_hash = hash_password(req.new_password)
+    try:
+        db.execute(
+            text("UPDATE tvdi.users SET password_hash = :p WHERE LOWER(username) = LOWER(:u)"),
+            {"p": new_hash, "u": current_user["username"]}
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Lỗi cơ sở dữ liệu: {str(e)}")
+
+    record_activity(
+        db, current_user["username"], "Đổi mật khẩu",
+        "Người dùng tự cập nhật mật khẩu thành công", ip_address=get_client_ip(request)
+    )
     return {"success": True, "message": "Đổi mật khẩu thành công! Vui lòng ghi nhớ mật khẩu mới."}
 
 
 @router.post("/logout")
-def logout(current_user: Dict[str, Any] = Depends(get_current_user), db: Session = Depends(get_db)):
+def logout(request: Request, current_user: Dict[str, Any] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Đăng xuất khỏi hệ thống."""
     if current_user.get("role") != "guest":
-        record_activity(db, current_user.get("username", "guest"), "Đăng xuất", "Người dùng đã kết thúc phiên làm việc")
+        record_activity(
+            db, current_user.get("username", "guest"), "Đăng xuất",
+            "Người dùng đã kết thúc phiên làm việc", ip_address=get_client_ip(request)
+        )
     return {"success": True, "message": "Đã đăng xuất thành công."}
 
 
 @router.post("/log-activity")
 def log_activity_from_client(
     req: ActivityLogRequest,
+    request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Ghi nhận hành động tương tác của người dùng từ giao diện Web."""
+    if not current_user or current_user.get("role") == "guest":
+        raise HTTPException(status_code=401, detail="Vui lòng đăng nhập để ghi nhận hoạt động.")
     uname = current_user.get("username", "guest")
-    record_activity(db, uname, req.action, req.details or "")
+    action_clean = (req.action or "").strip()[:120]
+    details_clean = (req.details or "").strip()[:500]
+    if action_clean:
+        record_activity(db, uname, action_clean, details_clean, ip_address=get_client_ip(request))
     return {"success": True}
 
 
@@ -419,6 +505,7 @@ def get_all_users_for_admin(
 @router.post("/admin/toggle-block")
 def admin_toggle_block_user(
     req: ToggleBlockRequest,
+    request: Request,
     admin_user: Dict[str, Any] = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
@@ -429,20 +516,17 @@ def admin_toggle_block_user(
     if target_uname == "admin":
         raise HTTPException(status_code=400, detail="Không thể khóa tài khoản Quản trị viên cấp cao nhất (admin)!")
 
-    # Cập nhật trong DB
     db.execute(
         text("UPDATE tvdi.users SET is_blocked = :b WHERE LOWER(username) = LOWER(:u)"),
         {"b": req.blocked, "u": target_uname}
     )
     db.commit()
 
-    if target_uname in USERS_DB:
-        USERS_DB[target_uname]["is_blocked"] = req.blocked
-
     status_text = "khóa" if req.blocked else "mở khóa"
     record_activity(
         db, admin_user["username"], f"Admin: {status_text.capitalize()} tài khoản",
-        f"Quản trị viên đã {status_text} quyền truy cập của người dùng '{target_uname}'"
+        f"Quản trị viên đã {status_text} quyền truy cập của người dùng '{target_uname}'",
+        ip_address=get_client_ip(request)
     )
     return {
         "success": True,
@@ -455,31 +539,30 @@ def admin_toggle_block_user(
 @router.post("/admin/reset-password")
 def admin_reset_user_password(
     req: AdminResetPasswordRequest,
+    request: Request,
     admin_user: Dict[str, Any] = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """Quản trị viên đổi mật khẩu giúp người dùng."""
     target_uname = req.username.strip().lower()
-    if len(req.new_password.strip()) < 6:
+    if not req.new_password or len(req.new_password) < 6:
         raise HTTPException(status_code=400, detail="Mật khẩu mới phải có ít nhất 6 ký tự.")
 
     user_record = find_user_record(target_uname, db)
     if not user_record:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy tài khoản '{target_uname}'!")
 
-    new_hash = hashlib.sha256(req.new_password.strip().encode()).hexdigest()
+    new_hash = hash_password(req.new_password)
     db.execute(
         text("UPDATE tvdi.users SET password_hash = :p WHERE LOWER(username) = LOWER(:u)"),
         {"p": new_hash, "u": target_uname}
     )
     db.commit()
 
-    if target_uname in USERS_DB:
-        USERS_DB[target_uname]["password_hash"] = new_hash
-
     record_activity(
         db, admin_user["username"], "Admin: Đổi mật khẩu",
-        f"Quản trị viên đã đổi mật khẩu mới cho tài khoản '{target_uname}'"
+        f"Quản trị viên đã đổi mật khẩu mới cho tài khoản '{target_uname}'",
+        ip_address=get_client_ip(request)
     )
     return {
         "success": True,
@@ -495,6 +578,7 @@ def admin_get_user_activities(
     db: Session = Depends(get_db)
 ):
     """Quản trị viên xem nhật ký hành động (Audit log) của toàn bộ hoặc từng người dùng."""
+    safe_limit = max(1, min(limit, 500))
     if username and username.strip() and username.strip().lower() != "all":
         sql = text("""
             SELECT id, username, action, details, ip_address, created_at
@@ -503,7 +587,7 @@ def admin_get_user_activities(
             ORDER BY created_at DESC
             LIMIT :lim;
         """)
-        rows = db.execute(sql, {"u": username.strip().lower(), "lim": limit}).fetchall()
+        rows = db.execute(sql, {"u": username.strip().lower(), "lim": safe_limit}).fetchall()
     else:
         sql = text("""
             SELECT id, username, action, details, ip_address, created_at
@@ -511,7 +595,7 @@ def admin_get_user_activities(
             ORDER BY created_at DESC
             LIMIT :lim;
         """)
-        rows = db.execute(sql, {"lim": limit}).fetchall()
+        rows = db.execute(sql, {"lim": safe_limit}).fetchall()
 
     activities = []
     for r in rows:
@@ -520,7 +604,7 @@ def admin_get_user_activities(
             "username": r[1],
             "action": r[2],
             "details": r[3] or "",
-            "ip_address": r[4] or "127.0.0.1",
+            "ip_address": r[4] or "unknown",
             "created_at": r[5].strftime("%d/%m/%Y %H:%M:%S") if r[5] else ""
         })
     return {"success": True, "activities": activities, "total": len(activities)}

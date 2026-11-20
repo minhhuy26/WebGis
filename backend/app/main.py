@@ -21,14 +21,22 @@ app = FastAPI(
     version="2.0.0",
 )
 
+STATIC_LONG_CACHE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".svg", ".woff", ".woff2", ".geojson")
+
+
 @app.middleware("http")
 async def add_no_cache_headers(request, call_next):
     response = await call_next(request)
-    # Vô hiệu hóa cache cho HTML và static files để frontend luôn cập nhật bản mới nhất
-    if request.url.path.startswith("/static/") or request.url.path == "/":
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
+    path = request.url.path
+    if path.startswith("/static/"):
+        lower_path = path.lower()
+        has_version = bool(request.query_params.get("v"))
+        if lower_path.endswith(STATIC_LONG_CACHE_EXTS) or (has_version and lower_path.endswith((".js", ".css"))):
+            response.headers["Cache-Control"] = "public, max-age=604800"
+        else:
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif path == "/":
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 # ---- Đăng ký routers -------------------------------------------------------
@@ -138,14 +146,17 @@ def _ensure_cloud_data_background():
                         JOIN tvdi.model_runs r ON r.id = f.model_run_id
                         WHERE f.horizon_type = 'monthly_12m' AND f.satellite_source = 'LANDSAT'
                           AND r.model_version = :version AND r.is_active AND f.cell_id IS NOT NULL
-                          AND f.date >= :m0 AND f.date < CAST(:m0 AS date) + INTERVAL '12 months'"""),
+                          AND f.date >= :m0"""),
                 {"m0": m0, "version": VERSION},
             ).scalar() or 0
 
-        if m12_cnt < 12:
-            train_and_populate_monthly_12m(m0, force_retrain=False)
-            print("[STARTUP-BG] Đã nạp xong dữ liệu dự báo 12 tháng (monthly_12m).")
-        elif d7_cnt < 7:
+        daily_seeded = []
+        if m12_cnt == 0:
+            res = train_and_populate_monthly_12m(m0, force_retrain=False, seed_only=True)
+            daily_seeded = res.get("daily_dates") or []
+            if res.get("monthly_dates"):
+                print("[STARTUP-BG] Đã nạp xong dữ liệu dự báo 12 tháng từ seed (monthly_12m).")
+        if d7_cnt < 7 and not daily_seeded:
             generate_daily_7d_simulated(today_dt)
             print("[STARTUP-BG] Đã sinh xong dữ liệu dự báo 7 ngày (daily_7d).")
 

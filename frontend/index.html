@@ -11,8 +11,8 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <!-- MapLibre GL CSS (Bản đồ 3D) -->
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-    <!-- Custom CSS (v12.0) -->
-    <link rel="stylesheet" href="/static/css/style.css?v=12.0">
+    <!-- Custom CSS (v12.4) -->
+    <link rel="stylesheet" href="/static/css/style.css?v=12.4">
 </head>
 <body>
     <!-- Header -->
@@ -41,7 +41,7 @@
                 <span>Bản tin</span>
             </button>
             <button id="btn-open-tree-benefit" class="btn btn-header-ghost btn-header-highlight" title="Tính toán lợi ích trồng cây xanh & Lựa chọn kịch bản sinh thái - kinh tế">
-                <i class="fa-solid fa-tree" style="color: #16a34a;"></i>
+                <i class="fa-solid fa-tree" style="color: #4ade80;"></i>
                 <span>Lợi ích trồng cây</span>
             </button>
 
@@ -166,9 +166,9 @@
             <button type="button" id="btn-toolbar-prev" class="tc-step" title="Mốc trước">
                 <i class="fa-solid fa-chevron-left"></i>
             </button>
-            <label class="tc-date" title="Chọn ngày bất kỳ (2017 – 2027)">
+            <label class="tc-date" title="Chọn ngày (từ 2017 đến dự báo)">
                 <i class="fa-regular fa-calendar"></i>
-                <input type="date" id="toolbar-date-picker" min="2017-01-01" max="2027-12-31" />
+                <input type="date" id="toolbar-date-picker" min="2017-01-01" max="2030-12-31" />
             </label>
             <select id="date-select" class="tc-cycle" title="Chọn nhanh mốc thời gian"></select>
             <button type="button" id="btn-toolbar-next" class="tc-step" title="Mốc sau">
@@ -180,7 +180,7 @@
             <option value="daily_7d">Theo ngày (7 ngày)</option>
             <option value="monthly_12m">Theo tháng (12 tháng)</option>
         </select>
-        <span id="forecast-source-pill" class="forecast-source-pill is-sim admin-tech-only" title="Thông số nguồn dự báo (Quản trị viên)">Giả lập · Landsat</span>
+        <span id="forecast-source-pill" class="forecast-source-pill is-sim" title="Nguồn dữ liệu dự báo đang hiển thị">Mô phỏng 7 ngày (tham khảo)</span>
 
         <select id="aggregation-select" class="tb-select" style="display: none;" title="Cách tổng hợp dữ liệu quan trắc (2017–2025)">
             <option value="cycle">Theo kỳ 15 ngày</option>
@@ -1102,7 +1102,6 @@
             </div>
         </div>
     </div>
-    <div id="mc-print-sheet" aria-hidden="true"></div>
 
     <!-- Modal: Tính Lợi Ích Trồng Cây Xanh & Kịch Bản Đô Thị -->
     <div id="tree-benefit-modal" class="modal-backdrop" style="display: none; z-index: 10005;">
@@ -1608,14 +1607,14 @@
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <!-- App JS (v12.2) -->
-    <script src="/static/js/bulletin.js?v=12.2"></script>
-    <script src="/static/js/map-composer.js?v=12.2"></script>
-    <script src="/static/js/app.js?v=12.2"></script>
-    <script src="/static/js/map-decor.js?v=12.2"></script>
-    <script src="/static/js/map3d.js?v=12.2"></script>
-    <script src="/static/js/analysis.js?v=12.2"></script>
-    <script src="/static/js/pixel-raster.js?v=12.2"></script>
-    <script src="/static/js/tree-benefit.js?v=12.2"></script>
+    <!-- App JS (v12.4) -->
+    <script src="/static/js/bulletin.js?v=12.4"></script>
+    <script src="/static/js/map-composer.js?v=12.4"></script>
+    <script src="/static/js/app.js?v=12.4"></script>
+    <script src="/static/js/map-decor.js?v=12.4"></script>
+    <script src="/static/js/map3d.js?v=12.4"></script>
+    <script src="/static/js/analysis.js?v=12.4"></script>
+    <script src="/static/js/pixel-raster.js?v=12.4"></script>
+    <script src="/static/js/tree-benefit.js?v=12.4"></script>
 </body>
 </html>

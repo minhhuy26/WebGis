@@ -157,9 +157,12 @@ function add3DLayers(m) {
             const p = f.properties || {};
             const key = state.activeRasterLayer;
             const title = layerId === 'wards3d-ext' ? (p.name || 'Phường / Xã') : `${e.lngLat.lat.toFixed(4)}°N, ${e.lngLat.lng.toFixed(4)}°E`;
+            const safeTitle = (typeof escapeHtml === 'function')
+                ? escapeHtml(title)
+                : String(title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const valTxt = (p.value === null || p.value === undefined || p.value === '') ? 'Không có dữ liệu' : formatIndexValue(Number(p.value), key);
             popup.setLngLat(e.lngLat)
-                .setHTML(`<div class="map3d-popup-body"><strong>${title}</strong><br>${INDEX_META[key].label}: <b>${valTxt}</b></div>`)
+                .setHTML(`<div class="map3d-popup-body"><strong>${safeTitle}</strong><br>${INDEX_META[key].label}: <b>${valTxt}</b></div>`)
                 .addTo(m);
         });
         m.on('mouseleave', layerId, () => {

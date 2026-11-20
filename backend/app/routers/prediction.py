@@ -25,13 +25,30 @@ router = APIRouter(prefix="/api/prediction", tags=["Dự báo AI"])
 MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
 
 
+def _max_forecast_date_str() -> str:
+    """Giới hạn ngày dự báo tối đa động (ít nhất đến hết năm hiện tại + 2)."""
+    return f"{max(2027, date.today().year + 2)}-12-31"
+
+
+def _validate_date_str(value: str, field: str = "date") -> str:
+    """Kiểm tra chuỗi ngày đúng định dạng YYYY-MM-DD, trả về lỗi 400 nếu sai."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tham số '{field}' phải có định dạng YYYY-MM-DD (nhận được: {value}).",
+        )
+
+
 def ensure_prediction_data_for_date(date_str: str, db: Session) -> bool:
     """
     Tự động nội suy/sinh kết quả dự báo thời gian thực cho bất kỳ ngày nào
     (ví dụ 18/10, 19/10, hoặc ngày thực tế người dùng truy cập) nếu chưa có sẵn trong DB.
-    Chặn tuyệt đối không sinh dữ liệu vượt quá ngày 31/12/2027 (không nhảy qua 2028).
+    Chặn không sinh dữ liệu ngoài khoảng 2026-01-01 đến _max_forecast_date_str().
     """
-    if date_str > "2027-12-31":
+    max_dt_str = _max_forecast_date_str()
+    if date_str < "2026-01-01" or date_str > max_dt_str:
         return False
     try:
         check = db.execute(text("SELECT 1 FROM tvdi.tvdi_forecast WHERE date = :d AND cell_id IS NOT NULL LIMIT 1"), {"d": date_str}).fetchone()
@@ -214,6 +231,7 @@ def get_forecast_dates(
         return [d.strftime("%Y-%m-%d") for d in days]
 
     if horizon == "monthly_12m":
+        m0 = date(today_dt.year, today_dt.month, 1)
         rows = db.execute(
             text("""
                 SELECT DISTINCT date FROM tvdi.tvdi_forecast
@@ -224,12 +242,24 @@ def get_forecast_dates(
                 ORDER BY date ASC
                 LIMIT 12
             """),
-            {"src": src, "m0": date(today_dt.year, today_dt.month, 1)},
+            {"src": src, "m0": m0},
         ).fetchall()
-        if len(rows) < 12:
+        if not rows:
+            rows = db.execute(
+                text("""
+                    SELECT DISTINCT date FROM tvdi.tvdi_forecast
+                    WHERE horizon_type = 'monthly_12m'
+                      AND satellite_source = :src
+                      AND cell_id IS NOT NULL
+                    ORDER BY date ASC
+                    LIMIT 12
+                """),
+                {"src": src},
+            ).fetchall()
+        if not rows:
             from ...scripts.train_monthly_forecast import train_and_populate_monthly_12m
-            res = train_and_populate_monthly_12m(date(today_dt.year, today_dt.month, 1))
-            return res["monthly_dates"]
+            res = train_and_populate_monthly_12m(m0, force_retrain=False, seed_only=True)
+            return res.get("monthly_dates", [])
         return [r[0].strftime("%Y-%m-%d") if isinstance(r[0], date) else str(r[0]) for r in rows]
 
     today_str = today_dt.strftime("%Y-%m-%d")
@@ -238,7 +268,8 @@ def get_forecast_dates(
     # Chuỗi 15 ngày/kỳ (tương thích ngược)
     forecast_dates = []
     curr = today_dt
-    end_dt = date(2027, 12, 31)
+    max_dt_str = _max_forecast_date_str()
+    end_dt = datetime.strptime(max_dt_str, "%Y-%m-%d").date()
 
     while curr <= end_dt:
         d_str = curr.strftime("%Y-%m-%d")
@@ -246,18 +277,18 @@ def get_forecast_dates(
         forecast_dates.append(d_str)
         curr += timedelta(days=15)
 
-    if forecast_dates[-1] != "2027-12-31":
-        ensure_prediction_data_for_date("2027-12-31", db)
-        forecast_dates.append("2027-12-31")
+    if forecast_dates and forecast_dates[-1] != max_dt_str:
+        ensure_prediction_data_for_date(max_dt_str, db)
+        forecast_dates.append(max_dt_str)
 
     if include_all:
         sql_past = text("""
             SELECT DISTINCT date 
             FROM tvdi.tvdi_forecast 
-            WHERE date < :today_dt AND date <= '2027-12-31'
+            WHERE date < :today_dt AND date <= :max_dt
             ORDER BY date ASC;
         """)
-        past_rows = db.execute(sql_past, {"today_dt": today_dt}).fetchall()
+        past_rows = db.execute(sql_past, {"today_dt": today_dt, "max_dt": end_dt}).fetchall()
         past_dates = [r[0].strftime("%Y-%m-%d") if isinstance(r[0], date) else str(r[0]) for r in past_rows]
         return sorted(list(set(past_dates + forecast_dates)))
 
@@ -275,6 +306,8 @@ def get_realtime_prediction(
     """
     if not target_date:
         target_date = date.today().strftime("%Y-%m-%d")
+    else:
+        target_date = _validate_date_str(target_date, "target_date")
 
     geojson = get_prediction_grid_geojson(target_date, horizon=horizon, db=db)
     geojson["is_realtime"] = True
@@ -391,9 +424,10 @@ def get_7day_forecast_series(
     """
     effective_cell_id = _parse_cell_target(target, cell_id)
     src = (satellite_source or "LANDSAT").upper()
-    try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else date.today()
-    except ValueError:
+    if start_date is not None:
+        start_date = _validate_date_str(start_date, "start_date")
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    else:
         start_dt = date.today()
     end_dt = start_dt + timedelta(days=6)
 
@@ -425,7 +459,8 @@ def get_7day_forecast_series(
         ).fetchall()
 
     rows = _query_rows()
-    if len(rows) < 7:
+    today_dt = date.today()
+    if len(rows) < 7 and (today_dt - timedelta(days=1) <= start_dt <= today_dt + timedelta(days=7)):
         from ...scripts.train_monthly_forecast import generate_daily_7d_simulated
         generate_daily_7d_simulated(start_dt)
         rows = _query_rows()
@@ -455,28 +490,31 @@ def get_12month_forecast_series(
     """
     effective_cell_id = _parse_cell_target(target, cell_id)
     src = (satellite_source or "LANDSAT").upper()
-    try:
-        base_dt = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else date.today()
-    except ValueError:
+    if start_date is not None:
+        start_date = _validate_date_str(start_date, "start_date")
+        base_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    else:
         base_dt = date.today()
     m_start = date(base_dt.year, base_dt.month, 1)
 
-    def _query_rows():
+    def _query_rows(from_date: Optional[date]):
         scope = "cell_id IS NULL" if effective_cell_id is None else "cell_id = :cid"
+        date_filter = "AND date >= :s" if from_date is not None else ""
+        params = {"cid": effective_cell_id, "src": src}
+        if from_date is not None:
+            params["s"] = from_date
         return db.execute(text(f"""
             SELECT date, ROUND(tvdi_pred::numeric, 3), ROUND(lst_pred::numeric, 2),
                    ROUND(ndvi_pred::numeric, 3), model_run_id
             FROM tvdi.tvdi_forecast
             WHERE {scope} AND horizon_type = 'monthly_12m' AND satellite_source = :src
-              AND date >= :s
-            ORDER BY date LIMIT 12
-        """), {"cid": effective_cell_id, "src": src, "s": m_start}).fetchall()
+              {date_filter}
+            ORDER BY date ASC LIMIT 12
+        """), params).fetchall()
 
-    rows = _query_rows()
-    if not rows:
-        from ...scripts.train_monthly_forecast import train_and_populate_monthly_12m
-        train_and_populate_monthly_12m(m_start)
-        rows = _query_rows()
+    rows = _query_rows(m_start)
+    if not rows and start_date is None:
+        rows = _query_rows(None)
 
     payload = _build_horizon_series_payload(
         db=db,
@@ -523,12 +561,10 @@ def get_15day_forecast_series(
     # Xác định ngày bắt đầu realtime (mặc định hôm nay)
     if not start_date:
         start_date = date.today().strftime("%Y-%m-%d")
+    else:
+        start_date = _validate_date_str(start_date, "start_date")
 
-    try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
-    except ValueError:
-        start_dt = date.today()
-        start_date = start_dt.strftime("%Y-%m-%d")
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
 
     cycle_dates = [start_dt + timedelta(days=i) for i in range(15)]
     end_dt = cycle_dates[-1]
@@ -538,7 +574,7 @@ def get_15day_forecast_series(
     for d_obj in cycle_dates:
         ensure_prediction_data_for_date(d_obj.strftime("%Y-%m-%d"), db)
 
-    # Đồng bộ giá trị trung bình toàn vùng
+    # Đồng bộ giá trị trung bình toàn vùng (chỉ tác động horizon_type = '15day')
     if effective_cell_id is None:
         db.execute(text("""
             UPDATE tvdi.tvdi_forecast f
@@ -546,17 +582,27 @@ def get_15day_forecast_series(
             FROM (
                 SELECT date, ROUND(AVG(tvdi_pred)::numeric, 3) as avg_pred
                 FROM tvdi.tvdi_forecast
-                WHERE cell_id IS NOT NULL AND date >= :s AND date <= :e
+                WHERE cell_id IS NOT NULL
+                  AND horizon_type = '15day'
+                  AND satellite_source = 'LANDSAT'
+                  AND date >= :s AND date <= :e
                 GROUP BY date
             ) sub
-            WHERE f.date = sub.date AND f.cell_id IS NULL AND f.date >= :s AND f.date <= :e
+            WHERE f.date = sub.date
+              AND f.cell_id IS NULL
+              AND f.horizon_type = '15day'
+              AND f.satellite_source = 'LANDSAT'
+              AND f.date >= :s AND f.date <= :e
         """), {"s": start_dt, "e": end_dt})
         db.commit()
 
         sql = text("""
             SELECT date, ROUND(tvdi_pred::numeric, 3) AS tvdi_pred
             FROM tvdi.tvdi_forecast
-            WHERE cell_id IS NULL AND date >= :s AND date <= :e
+            WHERE cell_id IS NULL
+              AND horizon_type = '15day'
+              AND satellite_source = 'LANDSAT'
+              AND date >= :s AND date <= :e
             ORDER BY date ASC;
         """)
         rows = db.execute(sql, {"s": start_dt, "e": end_dt}).fetchall()
@@ -564,7 +610,10 @@ def get_15day_forecast_series(
         sql = text("""
             SELECT date, ROUND(tvdi_pred::numeric, 3) AS tvdi_pred
             FROM tvdi.tvdi_forecast
-            WHERE cell_id = :cid AND date >= :s AND date <= :e
+            WHERE cell_id = :cid
+              AND horizon_type = '15day'
+              AND satellite_source = 'LANDSAT'
+              AND date >= :s AND date <= :e
             ORDER BY date ASC;
         """)
         rows = db.execute(sql, {"cid": effective_cell_id, "s": start_dt, "e": end_dt}).fetchall()
@@ -669,11 +718,16 @@ def get_15day_forecast_series(
 @router.get("/series/overall")
 def get_overall_forecast_series(max_date: Optional[str] = None, db: Session = Depends(get_db)):
     """
-    Chuỗi thời gian đối chiếu Thực tế (2017–2025) và Dự báo AI (2024–2027)
+    Chuỗi thời gian đối chiếu Thực tế (2017–2025) và Dự báo AI
     cho trung bình toàn vùng TP.HCM.
     """
-    if not max_date or max_date > "2027-12-31":
-        max_date = "2027-12-31"
+    limit_dt = _max_forecast_date_str()
+    if not max_date:
+        max_date = limit_dt
+    else:
+        max_date = _validate_date_str(max_date, "max_date")
+        if max_date > limit_dt:
+            max_date = limit_dt
 
     params = {"max_date": max_date}
 
@@ -742,8 +796,13 @@ def get_cell_forecast_series(cell_id: int, max_date: Optional[str] = None, db: S
     """
     Chuỗi thời gian đối chiếu Thực tế và Dự báo AI cho một ô lưới cụ thể.
     """
-    if not max_date or max_date > "2027-12-31":
-        max_date = "2027-12-31"
+    limit_dt = _max_forecast_date_str()
+    if not max_date:
+        max_date = limit_dt
+    else:
+        max_date = _validate_date_str(max_date, "max_date")
+        if max_date > limit_dt:
+            max_date = limit_dt
 
     params = {"cell_id": cell_id, "max_date": max_date}
 
@@ -828,6 +887,7 @@ def get_prediction_grid_geojson(
     - horizon='monthly_12m': dự báo theo tháng 12 tháng (AI Random Forest)
     - horizon=None: tự chọn khung ưu tiên có sẵn (daily_7d > monthly_12m > 15day > test_eval)
     """
+    date_str = _validate_date_str(date_str, "date_str")
     src = (satellite_source or "LANDSAT").upper()
     effective_horizon = horizon
 
@@ -841,24 +901,14 @@ def get_prediction_grid_geojson(
             {"d": date_str, "src": src},
         ).fetchone()
         if not has_7d:
-            from ...scripts.train_monthly_forecast import generate_daily_7d_simulated
-            try:
-                dt_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-            except ValueError:
-                dt_obj = date.today()
-            generate_daily_7d_simulated(dt_obj)
+            dt_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+            today_dt = date.today()
+            if today_dt <= dt_obj <= today_dt + timedelta(days=6):
+                from ...scripts.train_monthly_forecast import generate_daily_7d_simulated
+                generate_daily_7d_simulated(today_dt)
     elif effective_horizon == "monthly_12m":
-        has_12m = db.execute(
-            text("""
-                SELECT 1 FROM tvdi.tvdi_forecast
-                WHERE date = :d AND horizon_type = 'monthly_12m' AND satellite_source = :src AND cell_id IS NOT NULL
-                LIMIT 1
-            """),
-            {"d": date_str, "src": src},
-        ).fetchone()
-        if not has_12m:
-            from ...scripts.train_monthly_forecast import train_and_populate_monthly_12m
-            train_and_populate_monthly_12m()
+        # Không tự huấn luyện lại trên GET; nếu chưa có dữ liệu trong DB thì trả 404 phía dưới
+        pass
     else:
         avail = [
             r[0]

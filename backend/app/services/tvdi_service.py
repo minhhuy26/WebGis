@@ -924,6 +924,11 @@ def get_wards_ranking(
             for w in wards_rows
         ]
 
+    area_by_id = {
+        w["ward_id"]: w.get("area_km2")
+        for w in load_wards_catalog()
+        if isinstance(w, dict) and "ward_id" in w
+    }
     all_wards = []
     for i, w in enumerate(wards_rows):
         w_id = w[0]
@@ -948,6 +953,7 @@ def get_wards_ranking(
             "type": w_type,
             "lat": lat,
             "lon": lon,
+            "area_km2": area_by_id.get(w_id),
             "lst_c": lst_val,
             "ndvi": ndvi_val,
             "tvdi": tvdi_val,

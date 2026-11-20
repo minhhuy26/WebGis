@@ -303,7 +303,7 @@ function describeCurrentView(short = false) {
             return short ? `Dự báo T${mm}` : `Dự báo AI tháng ${mm} (12 tháng · Landsat)`;
         }
         if (v.horizon === 'daily_7d' || v.isSimulated) {
-            if (!isAdmin) return short ? `Ngày ${formatDateVN(v.date)}` : `Dự báo ngày ${formatDateVN(v.date)}`;
+            if (!isAdmin) return short ? `Mô phỏng ${formatDateVN(v.date)}` : `Dự báo mô phỏng ngày ${formatDateVN(v.date)} (tham khảo)`;
             return short ? `Giả lập ${formatDateVN(v.date)}` : `Dự báo ngày ${formatDateVN(v.date)} (Giả lập 7 ngày · Landsat)`;
         }
         return short ? `Dự báo ${formatDateVN(v.date)}` : (isAdmin ? `Dự báo AI ngày ${formatDateVN(v.date)}` : `Dự báo ngày ${formatDateVN(v.date)}`);
@@ -455,18 +455,4 @@ function renderLegend(layerKey) {
             </div>
             ${footer}`;
     }
-}
-
-// --- 6. Đồng hồ hệ thống trên thanh tiêu đề ---
-function startHeaderClock() {
-    const el = document.getElementById('header-clock-text');
-    const box = document.getElementById('header-clock');
-    if (!el) return;
-    const tick = () => {
-        const now = new Date();
-        el.innerText = now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-        if (box) box.title = now.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
-    };
-    tick();
-    setInterval(tick, 1000);
 }

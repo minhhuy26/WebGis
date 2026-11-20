@@ -1,11 +1,24 @@
 $ErrorActionPreference = "Stop"
 
+$secPwd = Read-Host "Nhap mat khau moi cho user postgres" -AsSecureString
+$bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPwd)
+try {
+    $newPwd = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+} finally {
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+}
+if ([string]::IsNullOrWhiteSpace($newPwd) -or $newPwd.Length -lt 8) {
+    Write-Host "Mat khau phai co it nhat 8 ky tu." -ForegroundColor Red
+    exit 1
+}
+$escapedPwd = $newPwd.Replace("'", "''")
+
 Write-Host "Dang khoi dong lai dich vu PostgreSQL (che do trust)..." -ForegroundColor Cyan
 Start-Service postgresql-x64-18
 Start-Sleep -Seconds 2
 
-Write-Host "Dang cap nhat mat khau cho user postgres ve 'nguyenhuy2006'..." -ForegroundColor Cyan
-& "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD 'nguyenhuy2006';"
+Write-Host "Dang cap nhat mat khau cho user postgres..." -ForegroundColor Cyan
+& "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$escapedPwd';"
 
 Write-Host "Dang khoi phuc cau hinh bao mat pg_hba.conf ve scram-sha-256..." -ForegroundColor Cyan
 python -c "
@@ -24,6 +37,6 @@ Restart-Service postgresql-x64-18
 Start-Sleep -Seconds 2
 
 Write-Host "========================================================" -ForegroundColor Green
-Write-Host "HOAN TAT! Mat khau postgres da duoc dat ve: nguyenhuy2006" -ForegroundColor Green
+Write-Host "HOAN TAT! Da cap nhat mat khau postgres thanh cong." -ForegroundColor Green
 Write-Host "========================================================" -ForegroundColor Green
 Start-Sleep -Seconds 3

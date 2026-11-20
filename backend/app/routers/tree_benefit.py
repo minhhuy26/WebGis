@@ -7,11 +7,17 @@ Router – API tính toán lợi ích trồng cây xanh & mô phỏng kịch b�
 - Giữ nước mưa, giảm dòng chảy tràn (Stormwater runoff retention)
 - Định giá kinh tế sinh thái (Tín chỉ Carbon, Sinh khối, Nước mưa)
 """
-from typing import Dict, List, Optional, Any
-from fastapi import APIRouter, Query, HTTPException
+import json
+import math
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Union
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from ..config import settings
+from ..database import get_db
 
 router = APIRouter()
 
@@ -37,7 +43,7 @@ class TreeBenefitInput(BaseModel):
 
 
 class YearlyBenefit(BaseModel):
-    year: int
+    year: Union[int, float]
     cum_co2_tons: float
     cum_o2_tons: float
     cum_biomass_kg: float
@@ -250,20 +256,24 @@ def calculate_tree_benefits(data: TreeBenefitInput) -> TreeBenefitOutput:
     annual_o2 = annual_co2 * (32.0 / 44.0)
     annual_water = (N * R) / 1000.0
 
-    # Chuỗi diễn biến theo từng năm (từ 1 đến T)
+    # Chuỗi diễn biến theo từng năm (từ 1 đến T; nếu T < 1 thì 1 mốc tại T)
     yearly: List[YearlyBenefit] = []
-    max_year = int(min(max(1, round(T)), 50))
-    for y in range(1, max_year + 1):
-        y_co2 = (N * C * y) / 1000.0
+    if T < 1.0:
+        steps_t = [T]
+    else:
+        max_year = int(min(max(1, math.ceil(T)), 100))
+        steps_t = [min(float(y), T) for y in range(1, max_year + 1)]
+    for t_y in steps_t:
+        y_co2 = (N * C * t_y) / 1000.0
         y_o2 = y_co2 * (32.0 / 44.0)
-        y_bio = N * B * y
-        y_water = (N * R * y) / 1000.0
+        y_bio = N * B * t_y
+        y_water = (N * R * t_y) / 1000.0
         y_v1 = y_co2 * P1
         y_v2 = y_bio * P2
         y_v3 = y_water * P3
-        y_tot = y_v1 + y_v2 + y_v3 - c_inv - (c_maint * (y / max_year))
+        y_tot = y_v1 + y_v2 + y_v3 - c_inv - (c_maint * (t_y / T))
         yearly.append(YearlyBenefit(
-            year=y,
+            year=int(t_y) if float(t_y).is_integer() else round(t_y, 2),
             cum_co2_tons=round(y_co2, 2),
             cum_o2_tons=round(y_o2, 2),
             cum_biomass_kg=round(y_bio, 0),
@@ -358,20 +368,19 @@ def compare_all_scenarios():
 @router.get("/tree-benefit/ward-recommendation/{ward_id}")
 def get_ward_tree_recommendation(
     ward_id: int,
-    target_cover_pct: float = Query(20.0, ge=5.0, le=50.0, description="Tỷ lệ độ che phủ cây xanh mục tiêu (%)")
+    target_cover_pct: float = Query(20.0, ge=5.0, le=50.0, description="Tỷ lệ độ che phủ cây xanh mục tiêu (%)"),
+    db: Session = Depends(get_db),
 ):
     """
-    Đề xuất kịch bản trồng cây tối ưu dựa trên hiện trạng phường/xã
+    Đề xuất kịch bản trồng cây dựa trên hiện trạng phường/xã
     (diện tích, độ che phủ thực vật NDVI và mức độ khô hạn TVDI).
     """
-    import json
-
     wards_file = settings.DATA_DIR / "tphcm_167_wards.json"
     if not wards_file.exists():
-        wards_file = Path(__file__).resolve().parent.parent.parent.parent / "data" / "tphcm_167_wards.json"
+        wards_file = Path(__file__).resolve().parent.parent.parent / "data" / "tphcm_167_wards.json"
     if not wards_file.exists():
         raise HTTPException(status_code=404, detail="Không tìm thấy dữ liệu danh mục phường/xã")
-    
+
     with open(wards_file, "r", encoding="utf-8") as f:
         wards = json.load(f)
 
@@ -381,13 +390,37 @@ def get_ward_tree_recommendation(
 
     area_km2 = float(target_ward.get("area_km2") or 2.0)
     area_m2 = area_km2 * 1000000.0
-    area_ha = area_km2 * 100.0
 
-    # Ước tính số cây dựa trên diện tích và mục tiêu che phủ
-    # Mỗi cây tán trung bình 16 m2
+    ndvi_val = None
+    tvdi_val = None
+    if db is not None and hasattr(db, "execute"):
+        try:
+            obs_row = db.execute(
+                text("""
+                    SELECT ndvi, tvdi
+                    FROM tvdi.ward_observations
+                    WHERE ward_id = :wid AND satellite_source = 'LANDSAT'
+                    ORDER BY date DESC
+                    LIMIT 1
+                """),
+                {"wid": ward_id},
+            ).fetchone()
+            if obs_row:
+                ndvi_val = float(obs_row[0]) if obs_row[0] is not None else None
+                tvdi_val = float(obs_row[1]) if obs_row[1] is not None else None
+        except Exception:
+            pass
+
+    # Mật độ trồng điều chỉnh theo hiện trạng NDVI/TVDI và tỷ lệ che phủ bổ sung
     crown_avg = 16.0
-    # Giả định diện tích tán mong muốn đạt thêm 3 - 5% diện tích tự nhiên của phường
-    suggested_trees = int(max(200, min(25000, round((area_m2 * (target_cover_pct / 100.0) * 0.04) / crown_avg))))
+    overlap_factor = 0.92
+    baseline_pct = max(2.0, min(40.0, (ndvi_val - 0.1) * 50.0)) if ndvi_val is not None else 10.0
+    added_cover_pct = max(2.0, target_cover_pct - baseline_pct)
+    if tvdi_val is not None and tvdi_val >= 0.625:
+        added_cover_pct += 2.0
+    suggested_trees = int(
+        max(200, min(50000, round((area_m2 * (added_cover_pct / 100.0)) / (crown_avg * overlap_factor))))
+    )
 
     rec_input = TreeBenefitInput(
         scenario_id=f"ward_{ward_id}",
@@ -398,7 +431,7 @@ def get_ward_tree_recommendation(
         biomass_rate=14.0,
         crown_area=crown_avg,
         water_retention=350.0,
-        overlap_factor=0.92,
+        overlap_factor=overlap_factor,
         carbon_price=300000.0,
         biomass_price=1000.0,
         water_price=10000.0,
@@ -417,8 +450,11 @@ def get_ward_tree_recommendation(
         "recommendation": {
             "suggested_n_trees": suggested_trees,
             "target_cover_pct": target_cover_pct,
+            "current_ndvi": round(ndvi_val, 3) if ndvi_val is not None else None,
+            "current_tvdi": round(tvdi_val, 3) if tvdi_val is not None else None,
+            "added_cover_pct": round(added_cover_pct, 2),
             "estimated_temp_drop_c": temp_drop,
             "shade_area_pct": round((out.shade_area_m2 / area_m2) * 100.0, 2),
-            "calculated_benefits": out.dict()
+            "calculated_benefits": out.model_dump() if hasattr(out, "model_dump") else out.dict(),
         }
     }

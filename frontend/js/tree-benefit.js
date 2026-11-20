@@ -134,6 +134,9 @@
     const state = {
         currentScenarioId: 'tong_hop',
         selectedWard: null,
+        fallbackWards: [],
+        scenariosHydrated: false,
+        wardReqSeq: 0,
         activeTab: 'formula', // 'formula' | 'chart' | 'matrix'
         charts: {
             pie: null,
@@ -141,6 +144,24 @@
         },
         latestResult: null
     };
+
+    function escapeHtml(str) {
+        return String(str || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function getWardsList() {
+        const ws = window.state && window.state.wards;
+        if (ws) {
+            if (Array.isArray(ws.allList) && ws.allList.length > 0) return ws.allList;
+            if (Array.isArray(ws.list) && ws.list.length > 0) return ws.list;
+        }
+        return Array.isArray(state.fallbackWards) ? state.fallbackWards : [];
+    }
 
     // ---- Format tiền tệ & số liệu Việt Nam chuẩn ----------------------------
     function formatVND(value) {
@@ -164,7 +185,8 @@
         const B = Math.max(0, parseFloat(params.b) || 0);
         const S = Math.max(0, parseFloat(params.s) || 0);
         const R = Math.max(0, parseFloat(params.r) || 0);
-        const f = Math.max(0, Math.min(1.0, parseFloat(params.f) !== undefined ? parseFloat(params.f) : 1.0));
+        const parsedF = parseFloat(params.f);
+        const f = Number.isFinite(parsedF) ? Math.max(0, Math.min(1.0, parsedF)) : 1.0;
         const P1 = Math.max(0, parseFloat(params.p1) || 0);
         const P2 = Math.max(0, parseFloat(params.p2) || 0);
         const P3 = Math.max(0, parseFloat(params.p3) || 0);
@@ -200,20 +222,32 @@
         const total_gross = g1 + g2 + g3;
         const total_net = total_gross - C_inv - C_maint;
 
-        // Chuỗi diễn biến theo từng năm
-        const yearsCount = Math.max(1, Math.min(50, Math.round(T)));
+        // Chuỗi diễn biến theo từng năm (hỗ trợ T < 1 và T lên đến 100 năm khớp backend)
+        let stepsT;
+        if (T <= 0) {
+            stepsT = [0];
+        } else if (T < 1.0) {
+            stepsT = [T];
+        } else {
+            const maxYear = Math.min(Math.max(1, Math.ceil(T)), 100);
+            stepsT = [];
+            for (let y = 1; y <= maxYear; y++) {
+                stepsT.push(Math.min(y, T));
+            }
+        }
         const timeline = [];
-        for (let y = 1; y <= yearsCount; y++) {
-            const y_co2 = (N * C * y) / 1000;
+        stepsT.forEach((tY) => {
+            const y_co2 = (N * C * tY) / 1000;
             const y_o2 = y_co2 * (32 / 44);
-            const y_bio = N * B * y;
-            const y_water = (N * R * y) / 1000;
+            const y_bio = N * B * tY;
+            const y_water = (N * R * tY) / 1000;
             const y_g1 = y_co2 * P1;
             const y_g2 = y_bio * P2;
             const y_g3 = y_water * P3;
-            const y_tot = y_g1 + y_g2 + y_g3 - C_inv - (C_maint * (y / yearsCount));
+            const maintFactor = T > 0 ? (tY / T) : 0;
+            const y_tot = y_g1 + y_g2 + y_g3 - C_inv - (C_maint * maintFactor);
             timeline.push({
-                year: y,
+                year: Number.isInteger(tY) ? tY : Math.round(tY * 100) / 100,
                 co2: y_co2,
                 o2: y_o2,
                 biomass: y_bio,
@@ -223,7 +257,7 @@
                 g3: y_g3,
                 total: y_tot
             });
-        }
+        });
 
         return {
             N, T, C, B, S, R, f, P1, P2, P3, C_inv, C_maint,
@@ -244,6 +278,7 @@
 
     // ---- Lấy thông số từ giao diện nhập liệu ---------------------------------
     function readFormInputs() {
+        const rawF = parseFloat(document.getElementById('tb-input-f')?.value);
         return {
             n: parseFloat(document.getElementById('tb-input-n')?.value) || 0,
             t: parseFloat(document.getElementById('tb-input-t')?.value) || 0,
@@ -251,7 +286,7 @@
             b: parseFloat(document.getElementById('tb-input-b')?.value) || 0,
             s: parseFloat(document.getElementById('tb-input-s')?.value) || 0,
             r: parseFloat(document.getElementById('tb-input-r')?.value) || 0,
-            f: parseFloat(document.getElementById('tb-input-f')?.value) || 1.0,
+            f: Number.isFinite(rawF) ? rawF : 1.0,
             p1: parseFloat(document.getElementById('tb-input-p1')?.value) || 0,
             p2: parseFloat(document.getElementById('tb-input-p2')?.value) || 0,
             p3: parseFloat(document.getElementById('tb-input-p3')?.value) || 0,
@@ -392,46 +427,65 @@
 
         const areaKm2 = parseFloat(ward.area_km2) || 2.0;
         const areaM2 = areaKm2 * 1000000;
+        const crownAvg = 16.0;
+        const overlapFactor = 0.92;
+        const ndviVal = (ward.ndvi !== undefined && ward.ndvi !== null && !isNaN(ward.ndvi)) ? parseFloat(ward.ndvi) : null;
+        const tvdiVal = (ward.tvdi !== undefined && ward.tvdi !== null && !isNaN(ward.tvdi)) ? parseFloat(ward.tvdi) : null;
+        const baselinePct = ndviVal !== null ? Math.max(2.0, Math.min(40.0, (ndviVal - 0.1) * 50.0)) : 10.0;
+        let addedCoverPct = Math.max(2.0, 20.0 - baselinePct);
+        if (tvdiVal !== null && tvdiVal >= 0.625) addedCoverPct += 2.0;
+        const suggestedTrees = Math.min(50000, Math.max(200, Math.round((areaM2 * (addedCoverPct / 100.0)) / (crownAvg * overlapFactor))));
 
-        // Tính số cây khuyến nghị dựa trên diện tích tự nhiên và chỉ số NDVI
-        // Nếu NDVI < 0.2: khu vực đô thị đặc thiếu cây -> cần trồng tăng cường ~35 cây/ha
-        // Nếu NDVI >= 0.2: duy trì & bổ sung ~18 cây/ha
-        const ndvi = ward.ndvi !== undefined && ward.ndvi !== null ? parseFloat(ward.ndvi) : 0.25;
-        const treesPerHa = ndvi < 0.20 ? 35 : (ndvi < 0.35 ? 22 : 15);
-        const areaHa = areaKm2 * 100;
-        const suggestedTrees = Math.min(25000, Math.max(200, Math.round(areaHa * treesPerHa)));
+        const applyComputedWard = (trees, ndvi, tvdi, km2) => {
+            const wardParams = {
+                n: trees,
+                t: 10,
+                c: 22,
+                b: 14,
+                s: crownAvg,
+                r: 350,
+                f: overlapFactor,
+                p1: 300000,
+                p2: 1000,
+                p3: 10000,
+                c_inv: trees * 120000,
+                c_maint: trees * 20000 * 10
+            };
+            setFormInputs(wardParams);
 
-        const wardParams = {
-            n: suggestedTrees,
-            t: 10,
-            c: 22,
-            b: 14,
-            s: 16,
-            r: 350,
-            f: 0.92,
-            p1: 300000,
-            p2: 1000,
-            p3: 10000,
-            c_inv: suggestedTrees * 120000, // 120k đ/cây
-            c_maint: suggestedTrees * 20000 * 10 // 20k đ/cây/năm trong 10 năm
+            const bannerDesc = document.getElementById('tb-scenario-desc');
+            const badge = document.getElementById('tb-scenario-badge');
+            if (badge) {
+                badge.innerText = `Phường/Xã: ${ward.name}`;
+                badge.className = 'tb-scenario-badge is-ward';
+            }
+            if (bannerDesc) {
+                const ndviStr = ndvi !== null && ndvi !== undefined ? Number(ndvi).toFixed(3) : 'Chưa có';
+                const tvdiStr = tvdi !== null && tvdi !== undefined ? Number(tvdi).toFixed(3) : 'Chưa có';
+                bannerDesc.innerHTML = `<strong>${escapeHtml(ward.name)}</strong> (${escapeHtml(ward.district || 'TP.HCM')}) · Diện tích: <strong>${Number(km2).toFixed(2)} km²</strong> · NDVI hiện trạng: <strong>${ndviStr}</strong> · TVDI: <strong>${tvdiStr}</strong>.<br>Mô phỏng bổ sung <strong>${formatNumberVN(trees)} cây</strong> giúp tăng diện tích bóng mát và làm dịu nhiệt độ bề mặt đất LST.`;
+            }
+            renderResults(computeBenefits(wardParams));
         };
 
-        setFormInputs(wardParams);
+        applyComputedWard(suggestedTrees, ndviVal, tvdiVal, areaKm2);
 
-        const bannerDesc = document.getElementById('tb-scenario-desc');
-        const badge = document.getElementById('tb-scenario-badge');
-        if (badge) {
-            badge.innerText = `Phường/Xã: ${ward.name}`;
-            badge.className = 'tb-scenario-badge is-ward';
+        const reqSeq = ++state.wardReqSeq;
+        if (ward.ward_id && typeof fetch === 'function') {
+            fetch(`/api/tree-benefit/ward-recommendation/${ward.ward_id}`)
+                .then(r => (r.ok ? r.json() : null))
+                .then(data => {
+                    if (reqSeq !== state.wardReqSeq || state.currentScenarioId !== 'ward_selected') return;
+                    const rec = data && data.recommendation;
+                    if (!rec || !rec.suggested_n_trees) return;
+                    const wInfo = data.ward || {};
+                    const apiTrees = Number(rec.suggested_n_trees);
+                    const apiKm2 = Number(wInfo.area_km2) || areaKm2;
+                    const apiNdvi = rec.current_ndvi !== undefined && rec.current_ndvi !== null ? rec.current_ndvi : ndviVal;
+                    const apiTvdi = rec.current_tvdi !== undefined && rec.current_tvdi !== null ? rec.current_tvdi : tvdiVal;
+                    applyComputedWard(apiTrees, apiNdvi, apiTvdi, apiKm2);
+                })
+                .catch(() => {});
         }
-        if (bannerDesc) {
-            const ndviStr = ward.ndvi !== undefined && ward.ndvi !== null ? Number(ward.ndvi).toFixed(3) : 'Chưa có';
-            const tvdiStr = ward.tvdi !== undefined && ward.tvdi !== null ? Number(ward.tvdi).toFixed(3) : 'Chưa có';
-            bannerDesc.innerHTML = `<strong>${ward.name}</strong> (${ward.district || 'TP.HCM'}) · Diện tích: <strong>${areaKm2.toFixed(2)} km²</strong> · NDVI hiện trạng: <strong>${ndviStr}</strong> · TVDI: <strong>${tvdiStr}</strong>.<br>Mô phỏng bổ sung <strong>${formatNumberVN(suggestedTrees)} cây</strong> giúp tăng diện tích bóng mát và làm dịu nhiệt độ bề mặt đất LST.`;
-        }
-
-        const res = computeBenefits(wardParams);
-        renderResults(res);
     }
 
     // ---- Vẽ biểu đồ Chart.js (Doughnut cơ cấu giá trị & Diễn biến thời gian) ---
@@ -554,8 +608,8 @@
                         y: {
                             ticks: {
                                 callback: (val) => {
-                                    if (val >= 1e9) return (val / 1e9).toFixed(1) + ' tỷ';
-                                    if (val >= 1e6) return (val / 1e6).toFixed(0) + ' tr';
+                                    if (Math.abs(val) >= 1e9) return (val / 1e9).toFixed(1) + ' tỷ';
+                                    if (Math.abs(val) >= 1e6) return (val / 1e6).toFixed(0) + ' tr';
                                     return val.toLocaleString('vi-VN');
                                 },
                                 font: { size: 10 }
@@ -736,14 +790,33 @@
 
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
+        const blobUrl = URL.createObjectURL(blob);
+        link.href = blobUrl;
         link.download = `Loi_ich_trong_cay_${state.currentScenarioId}_${new Date().toISOString().slice(0, 10)}.csv`;
         link.click();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
         showToast('Đã xuất báo cáo CSV thành công!');
     }
 
     // ---- In ấn báo cáo A4 --------------------------------------------------
     function printReport() {
+        document.body.classList.add('printing-tree-benefit');
+        const cleanup = () => {
+            document.body.classList.remove('printing-tree-benefit');
+        };
+        window.addEventListener('afterprint', cleanup, { once: true });
+        if (window.matchMedia) {
+            const mql = window.matchMedia('print');
+            const onChange = (e) => {
+                if (!e.matches) {
+                    cleanup();
+                    if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+                    else if (mql.removeListener) mql.removeListener(onChange);
+                }
+            };
+            if (mql.addEventListener) mql.addEventListener('change', onChange);
+            else if (mql.addListener) mql.addListener(onChange);
+        }
         window.print();
     }
 
@@ -784,14 +857,55 @@
         }
     }
 
+    // ---- Nạp kịch bản chuẩn từ Backend (fallback về danh mục cục bộ) --------
+    function hydrateScenariosFromApi() {
+        if (state.scenariosHydrated || typeof fetch !== 'function') return;
+        state.scenariosHydrated = true;
+        fetch('/api/tree-benefit/presets')
+            .then(r => (r.ok ? r.json() : null))
+            .then(list => {
+                if (!Array.isArray(list) || list.length === 0) return;
+                list.forEach(item => {
+                    if (!item || !item.id) return;
+                    TREE_SCENARIOS[item.id] = {
+                        id: item.id,
+                        name: item.name,
+                        desc: item.desc || '',
+                        icon: item.icon || 'fa-tree',
+                        tag: item.tag || '',
+                        n: Number(item.n_trees),
+                        t: Number(item.years),
+                        c: Number(item.co2_rate),
+                        b: Number(item.biomass_rate),
+                        s: Number(item.crown_area),
+                        r: Number(item.water_retention),
+                        f: Number(item.overlap_factor),
+                        p1: Number(item.carbon_price),
+                        p2: Number(item.biomass_price),
+                        p3: Number(item.water_price),
+                        c_inv: Number(item.c_invest || 0),
+                        c_maint: Number(item.c_maint || 0),
+                    };
+                });
+                if (state.currentScenarioId && TREE_SCENARIOS[state.currentScenarioId]) {
+                    onScenarioChange(state.currentScenarioId);
+                }
+                if (state.activeTab === 'matrix') {
+                    renderScenarioMatrix();
+                }
+            })
+            .catch(() => { state.scenariosHydrated = false; });
+    }
+
     // ---- Mở / Đóng Modal ----------------------------------------------------
     function openModal(ward = null) {
         const modal = document.getElementById('tree-benefit-modal');
         if (!modal) return;
         modal.style.display = 'flex';
 
-        // Điền danh sách phường vào select nếu chưa có
+        // Điền danh sách phường vào select nếu chưa có & đồng bộ kịch bản từ backend
         populateWardSelect();
+        hydrateScenariosFromApi();
 
         if (ward) {
             applyWardScenario(ward);
@@ -807,12 +921,28 @@
     }
 
     // Nạp danh sách 167 phường vào select bên trong modal
+    let _wardsFetching = false;
     function populateWardSelect() {
         const sel = document.getElementById('tb-ward-select');
         if (!sel || sel.options.length > 1) return;
 
-        const wards = (window.state && window.state.wards && window.state.wards.allList) || [];
-        if (wards.length === 0) return;
+        const wards = getWardsList();
+        if (wards.length === 0) {
+            if (!_wardsFetching && typeof fetch === 'function') {
+                _wardsFetching = true;
+                fetch('/api/wards')
+                    .then(r => (r.ok ? r.json() : null))
+                    .then(data => {
+                        if (data && Array.isArray(data.wards) && data.wards.length > 0) {
+                            state.fallbackWards = data.wards;
+                            populateWardSelect();
+                        }
+                    })
+                    .catch(() => {})
+                    .finally(() => { _wardsFetching = false; });
+            }
+            return;
+        }
 
         sel.innerHTML = '<option value="">-- Chọn Phường/Xã để tính toán tự động --</option>';
         wards.forEach(w => {
@@ -857,7 +987,7 @@
             wardSelect.addEventListener('change', (e) => {
                 const wId = parseInt(e.target.value, 10);
                 if (!wId) return;
-                const wards = (window.state && window.state.wards && window.state.wards.allList) || [];
+                const wards = getWardsList();
                 const matched = wards.find(w => w.ward_id === wId);
                 if (matched) applyWardScenario(matched);
             });
@@ -932,6 +1062,7 @@
         openModal,
         closeModal,
         applyWardScenario,
+        refreshWards: populateWardSelect,
         selectPreset: (scId) => {
             const scSelect = document.getElementById('tb-scenario-select');
             if (scSelect) scSelect.value = scId;

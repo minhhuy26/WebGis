@@ -1,7 +1,8 @@
 """
 Router – API endpoints cho thống kê theo khu vực và phân loại mức khô hạn.
 """
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -28,4 +29,11 @@ def get_stats_summary(
     - Số lượng ô và tỷ lệ % theo từng cấp độ khô hạn
     - LST, NDVI, TVDI trung bình, cực tiểu, cực đại toàn vùng
     """
-    return tvdi_service.get_drought_statistics(db, date)
+    try:
+        norm_date = datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tham số 'date' phải có định dạng YYYY-MM-DD (nhận được: {date}).",
+        )
+    return tvdi_service.get_drought_statistics(db, norm_date)

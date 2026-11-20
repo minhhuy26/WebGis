@@ -1,7 +1,7 @@
 {
   "model_name": "Random Forest Regressor",
   "library": "scikit-learn",
-  "trained_at": "2026-11-12 13:12:28",
+  "trained_at": "2026-11-20 15:35:10",
   "train_period": "2017-01-01 đến 2023-12-12 (168 kỳ quan trắc, 7 năm)",
   "test_period": "2024-01-01 đến 2025-12-12 (48 kỳ quan trắc, 2 năm)",
   "future_forecast_period": "2026-10-17 đến 2027-03-31 (Dự báo thời gian thực & mùa khô 2027)",
@@ -12,69 +12,69 @@
     "random_state": 42
   },
   "grid_metrics": {
-    "r2_score": 0.3695,
-    "rmse": 0.1515,
-    "mae": 0.1136,
-    "test_samples": 13119
+    "r2_score": 0.1845,
+    "rmse": 0.1693,
+    "mae": 0.1266,
+    "test_samples": 13024
   },
   "overall_metrics": {
-    "r2_score": 0.2893,
+    "r2_score": 0.2889,
     "rmse": 0.0478,
-    "mae": 0.0376,
+    "mae": 0.0377,
     "test_samples": 48
   },
   "feature_importances": [
     {
-      "feature": "lag1",
-      "importance_percent": 38.92
+      "feature": "cell_seasonal_mean",
+      "importance_percent": 34.19
     },
     {
-      "feature": "cell_seasonal_mean",
-      "importance_percent": 26.73
+      "feature": "lag1",
+      "importance_percent": 31.6
     },
     {
       "feature": "diff_lag",
-      "importance_percent": 5.84
+      "importance_percent": 6.18
     },
     {
       "feature": "lag24",
-      "importance_percent": 4.56
+      "importance_percent": 4.77
     },
     {
       "feature": "lag3",
-      "importance_percent": 3.84
+      "importance_percent": 3.9
     },
     {
       "feature": "cos_period",
-      "importance_percent": 2.91
+      "importance_percent": 2.97
     },
     {
       "feature": "rolling_mean3",
-      "importance_percent": 2.77
+      "importance_percent": 2.6
     },
     {
       "feature": "lon",
-      "importance_percent": 2.68
+      "importance_percent": 2.55
     },
     {
       "feature": "sin_period",
-      "importance_percent": 2.57
+      "importance_percent": 2.5
     },
     {
       "feature": "lag2",
-      "importance_percent": 2.56
+      "importance_percent": 2.49
     },
     {
       "feature": "cell_mean",
-      "importance_percent": 2.51
+      "importance_percent": 2.35
     },
     {
       "feature": "lat",
-      "importance_percent": 2.28
+      "importance_percent": 2.21
     },
     {
       "feature": "month",
-      "importance_percent": 1.82
+      "importance_percent": 1.69
     }
   ],
   "future_dates": [
@@ -885,5 +885,6 @@
         "regional_cycle": null
       }
     }
-  }
+  },
+  "leakage_free": true
 }

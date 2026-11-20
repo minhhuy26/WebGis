@@ -34,6 +34,7 @@ const state = {
     rasterSeq: 0,
     wardsSeq: 0,
     overallSeriesCache: null,   // Chuỗi trung bình toàn vùng (dùng cho biên khô/ướt trong biểu đồ tam giác TVDI)
+    chartCache: {},             // Đệm phản hồi chuỗi thời gian ngắn hạn (chống gọi lặp API)
     mapDecor: {
         title: true,
         graticule: true,
@@ -119,7 +120,12 @@ const state = {
         selectedWardId: null,
         markersLayer: null,
     },
+    pointSeq: 0,
+    autoAlertsEnabled: (typeof localStorage !== 'undefined') ? localStorage.getItem('tvdi_alerts') !== '0' : true,
+    soundAlertsEnabled: (typeof localStorage !== 'undefined') ? localStorage.getItem('tvdi_sound') !== '0' : true,
+    lastAlertDataKey: '',
 };
+if (typeof window !== 'undefined') window.state = state;
 
 
 const GEE_COLOR_PALETTES = {
@@ -222,6 +228,7 @@ const INDEX_META = {
         legendTitle: 'LST (°C) – Nhiệt độ bề mặt đất',
         mapTitle: 'BẢN ĐỒ NHIỆT ĐỘ BỀ MẶT (LST)',
         icon: 'fa-temperature-half',
+        color: '#ea580c',
         low: 'Mát',
         high: 'Nóng',
         decimals: 1,
@@ -234,6 +241,7 @@ const INDEX_META = {
         legendTitle: 'NDVI – Chỉ số thực vật',
         mapTitle: 'BẢN ĐỒ CHỈ SỐ THỰC VẬT (NDVI)',
         icon: 'fa-leaf',
+        color: '#16a34a',
         low: 'Ít thực vật',
         high: 'Thực vật dày',
         decimals: 3,
@@ -246,6 +254,7 @@ const INDEX_META = {
         legendTitle: 'TVDI – Chỉ số khô hạn thực vật',
         mapTitle: 'BẢN ĐỒ CHỈ SỐ KHÔ HẠN (TVDI)',
         icon: 'fa-droplet',
+        color: '#4f46e5',
         low: 'Ẩm',
         high: 'Khô hạn',
         decimals: 3,
@@ -393,13 +402,14 @@ function getMainlandGeometry() {
 
 // Lưới giá trị nội suy (đệm theo bộ dữ liệu + chỉ số) – dùng chung cho raster 2D, cột 3D và biểu đồ
 const rasterGridCache = { key: null, grid: null };
-function computeRasterGrid(layerKey) {
-    if (!state.currentGridData || !state.currentGridData.features) return null;
+function computeRasterGrid(layerKey, gridDataOverride = null) {
+    const srcGridData = gridDataOverride || state.currentGridData;
+    if (!srcGridData || !srcGridData.features) return null;
     const geo = getMainlandGeometry();
     if (!geo) return null;
 
-    const cacheKey = `${state.currentDataKey}|${layerKey}`;
-    if (rasterGridCache.key === cacheKey && rasterGridCache.grid) return rasterGridCache.grid;
+    const cacheKey = gridDataOverride ? null : `${state.currentDataKey}|${layerKey}`;
+    if (cacheKey && rasterGridCache.key === cacheKey && rasterGridCache.grid) return rasterGridCache.grid;
 
     const px = IDW_PARAMS.pixelDeg;
     const [minLon, minLat, maxLon, maxLat] = geo.bbox;
@@ -425,7 +435,7 @@ function computeRasterGrid(layerKey) {
     mctx.fill('evenodd');
     const maskData = mctx.getImageData(0, 0, w, h).data;
 
-    const index = buildIdwIndex(state.currentGridData.features, layerKey);
+    const index = buildIdwIndex(srcGridData.features, layerKey);
     const values = new Float32Array(w * h);
     const status = new Uint8Array(w * h);   // 0: ngoài ranh giới, 1: không có dữ liệu, 2: có giá trị
     for (let y = 0; y < h; y++) {
@@ -444,8 +454,10 @@ function computeRasterGrid(layerKey) {
     }
 
     const grid = { w, h, px, minLon, maxLat, maxLon: minLon + w * px, minLat: maxLat - h * px, values, status, layerKey };
-    rasterGridCache.key = cacheKey;
-    rasterGridCache.grid = grid;
+    if (cacheKey) {
+        rasterGridCache.key = cacheKey;
+        rasterGridCache.grid = grid;
+    }
     return grid;
 }
 
@@ -531,13 +543,18 @@ async function loadBoundary() {
     }
 }
 
+let boundaryHaloLayer = null;
+let boundaryLineLayer = null;
+
 function renderBoundary() {
     boundaryLayerGroup.clearLayers();
+    boundaryHaloLayer = null;
+    boundaryLineLayer = null;
     renderOutsideMask();
     if (!state.boundaryGeoJson || !state.layerVisibility.boundary) return;
 
     // Ranh giới vùng nghiên cứu: nét đậm màu tối có quầng trắng (rõ trên cả nền sáng lẫn ảnh vệ tinh)
-    const halo = L.geoJSON(state.boundaryGeoJson, {
+    boundaryHaloLayer = L.geoJSON(state.boundaryGeoJson, {
         interactive: false,
         style: {
             color: '#ffffff',
@@ -546,7 +563,7 @@ function renderBoundary() {
             fill: false,
         }
     });
-    const line = L.geoJSON(state.boundaryGeoJson, {
+    boundaryLineLayer = L.geoJSON(state.boundaryGeoJson, {
         interactive: false,
         style: {
             color: '#111827',
@@ -555,8 +572,18 @@ function renderBoundary() {
             fill: false,
         }
     });
-    boundaryLayerGroup.addLayer(halo);
-    boundaryLayerGroup.addLayer(line);
+    boundaryLayerGroup.addLayer(boundaryHaloLayer);
+    boundaryLayerGroup.addLayer(boundaryLineLayer);
+}
+
+function updateBoundaryOpacity() {
+    if (!boundaryHaloLayer || !boundaryLineLayer) {
+        renderBoundary();
+        return;
+    }
+    const op = state.layerOpacities.boundary;
+    boundaryHaloLayer.setStyle({ opacity: 0.85 * op });
+    boundaryLineLayer.setStyle({ opacity: op });
 }
 
 // Làm mờ vùng bên ngoài ranh giới TP.HCM để nổi bật khu vực nghiên cứu
@@ -715,22 +742,27 @@ function isWardFilterActive() {
     return Object.keys(t).some(k => t[k] !== null);
 }
 
+let wardsGeoJsonLayer = null;
+let wardsStyleFn = null;
+
 function renderWardsBoundary() {
     if (!wardsBoundaryLayerGroup) return;
     wardsBoundaryLayerGroup.clearLayers();
+    wardsGeoJsonLayer = null;
+    wardsStyleFn = null;
     if (!state.wardsBoundaryGeoJson) return;
 
     const isChoropleth = state.displayMode === 'ward';
     if (!state.layerVisibility.wardsBoundary && !isChoropleth) return;
 
-    const opacity = state.layerOpacities.wardsBoundary !== undefined ? state.layerOpacities.wardsBoundary : 0.9;
-    const lineOpacity = state.layerVisibility.wardsBoundary ? opacity : 0;
     const key = state.activeRasterLayer;
-    const fillOpacity = state.layerVisibility[key] ? (state.layerOpacities[key] ?? 1) * 0.92 : 0;
     const valueMap = isChoropleth ? buildWardValueMap(key) : null;
     const matchedIds = (isChoropleth && isWardFilterActive()) ? new Set((state.wards.list || []).map(w => w.ward_id)) : null;
 
-    const styleFor = (feature) => {
+    wardsStyleFn = (feature) => {
+        const opacity = state.layerOpacities.wardsBoundary !== undefined ? state.layerOpacities.wardsBoundary : 0.9;
+        const lineOpacity = state.layerVisibility.wardsBoundary ? opacity : 0;
+        const fillOpacity = state.layerVisibility[key] ? (state.layerOpacities[key] ?? 1) * 0.92 : 0;
         // Trên lớp pixel: nét ranh giới mảnh, nhạt để không lấn át màu ảnh
         const base = {
             color: isChoropleth ? '#1f2937' : '#334155',
@@ -751,8 +783,8 @@ function renderWardsBoundary() {
         return { ...base, fillColor: rgbCss(interpolateColor(key, info.value)), fillOpacity };
     };
 
-    const layer = L.geoJSON(state.wardsBoundaryGeoJson, {
-        style: styleFor,
+    wardsGeoJsonLayer = L.geoJSON(state.wardsBoundaryGeoJson, {
+        style: wardsStyleFn,
         onEachFeature: function (feature, l) {
             const p = feature.properties || {};
             const wardName = p.fullName || p.name || 'Phường / Xã';
@@ -771,7 +803,7 @@ function renderWardsBoundary() {
 
             l.bindTooltip(`
                 <div style="font-family: inherit; font-size: 12px; line-height: 1.4; padding: 2px 4px;">
-                    <div style="font-weight: 700; color: #0f172a;"><i class="fa-solid fa-map-pin" style="color: #2563eb; margin-right: 4px;"></i>${wardName}</div>
+                    <div style="font-weight: 700; color: #0f172a;"><i class="fa-solid fa-map-pin" style="color: #2563eb; margin-right: 4px;"></i>${escapeHtml(wardName)}</div>
                     ${valueHtml}
                     ${area}
                 </div>
@@ -796,13 +828,21 @@ function renderWardsBoundary() {
                     l.bringToFront();
                 },
                 mouseout: function () {
-                    l.setStyle(styleFor(feature));
+                    if (wardsStyleFn) l.setStyle(wardsStyleFn(feature));
                 }
             });
         }
     });
 
-    wardsBoundaryLayerGroup.addLayer(layer);
+    wardsBoundaryLayerGroup.addLayer(wardsGeoJsonLayer);
+}
+
+function updateWardsBoundaryOpacity() {
+    if (!wardsGeoJsonLayer || !wardsStyleFn) {
+        renderWardsBoundary();
+        return;
+    }
+    wardsGeoJsonLayer.setStyle(wardsStyleFn);
 }
 
 // --- 5. Tải dữ liệu viễn thám và cập nhật các lớp bản đồ ---
@@ -943,10 +983,10 @@ async function loadDataForCurrentDate() {
                     state.selectedMarker.setStyle({ fillColor: theme.badgeBg });
                     state.selectedMarker.setTooltipContent(`
                         <div style="font-size: 11px; line-height: 1.4;">
-                            <strong><i class="fa-solid fa-location-dot" style="color: #2563eb;"></i> ${state.selectedPoint.locationName}</strong><br>
+                            <strong><i class="fa-solid fa-location-dot" style="color: #2563eb;"></i> ${escapeHtml(state.selectedPoint.locationName)}</strong><br>
                             <span>Tọa độ: ${state.selectedPoint.lat.toFixed(4)}°N, ${state.selectedPoint.lon.toFixed(4)}°E</span><br>
                             <span>Chỉ số TVDI: <b style="color: ${theme.scoreColor}; font-weight: 800;">${interp.value.toFixed(3)}</b></span><br>
-                            <span>Cấp độ: <b>${theme.label}</b></span>
+                            <span>Cấp độ: <b>${escapeHtml(theme.label)}</b></span>
                         </div>
                     `);
                 }
@@ -979,15 +1019,21 @@ function isAdminUser() {
 
 function updateForecastSourcePill(view) {
     const pill = document.getElementById('forecast-source-pill');
-    if (!pill) return;
-    if (!view || view.kind !== 'forecast') return;
+    if (!pill || !view || view.kind !== 'forecast') return;
     const isSim = view.horizon === 'daily_7d' || !!view.isSimulated;
-    pill.classList.add('forecast-source-pill', 'admin-tech-only');
+    pill.classList.remove('admin-tech-only');
+    pill.classList.add('forecast-source-pill');
     pill.classList.toggle('is-sim', isSim);
     pill.classList.toggle('is-ai', !isSim);
-    pill.innerHTML = isSim
-        ? '<i class="fa-solid fa-flask"></i> Giả lập · Landsat'
-        : '<i class="fa-solid fa-brain"></i> AI Random Forest · Landsat';
+    if (isAdminUser()) {
+        pill.innerHTML = isSim
+            ? '<i class="fa-solid fa-flask"></i> Giả lập · Landsat'
+            : '<i class="fa-solid fa-brain"></i> AI Random Forest · Landsat';
+    } else {
+        pill.innerHTML = isSim
+            ? '<i class="fa-solid fa-flask"></i> Mô phỏng 7 ngày (tham khảo)'
+            : '<i class="fa-solid fa-calendar-days"></i> Dự báo 12 tháng (tham khảo)';
+    }
 }
 
 // Ràng buộc theo chế độ: ở chế độ Dự báo mở khóa cả 3 lớp khi CSDL có dữ liệu, vẫn ưu tiên mặc định TVDI
@@ -1167,6 +1213,7 @@ function renderGridCentroidPoints() {
             radius: 2.5,
             color: '#000000',
             weight: 1,
+            opacity: opacity,
             fillColor: '#000000',
             fillOpacity: 0.85 * opacity,
         });
@@ -1177,6 +1224,16 @@ function renderGridCentroidPoints() {
         });
 
         pointsLayerGroup.addLayer(marker);
+    });
+}
+
+function updateGridPointsOpacity() {
+    if (!pointsLayerGroup) return;
+    const opacity = state.layerOpacities.gridPoints;
+    pointsLayerGroup.eachLayer(l => {
+        if (typeof l.setStyle === 'function') {
+            l.setStyle({ opacity: opacity, fillOpacity: 0.85 * opacity });
+        }
     });
 }
 
@@ -1488,8 +1545,10 @@ async function handleMapClick(e) {
     selectLocation(clickLat, clickLon, interp, initialLocation);
     if (wardFeat) return;
 
+    const reqSeq = state.pointSeq;
     // Cập nhật tên địa danh chi tiết từ OpenStreetMap (nếu có mạng)
     getAdministrativeLocation(clickLat, clickLon).then(refinedLocation => {
+        if (reqSeq !== state.pointSeq) return;
         if (refinedLocation && refinedLocation !== initialLocation && state.selectedPoint) {
             state.selectedPoint.locationName = refinedLocation;
             const locEl = document.getElementById('selected-location-name');
@@ -1498,10 +1557,10 @@ async function handleMapClick(e) {
                 const theme = getDroughtUITheme(interp.value);
                 state.selectedMarker.setTooltipContent(`
                     <div style="font-size: 11px; line-height: 1.4;">
-                        <strong><i class="fa-solid fa-location-dot" style="color: #2563eb;"></i> ${refinedLocation}</strong><br>
+                        <strong><i class="fa-solid fa-location-dot" style="color: #2563eb;"></i> ${escapeHtml(refinedLocation)}</strong><br>
                         <span>Tọa độ: ${clickLat.toFixed(4)}°N, ${clickLon.toFixed(4)}°E</span><br>
                         <span>Chỉ số TVDI: <b style="color: ${theme.scoreColor}; font-weight: 800;">${interp.value.toFixed(3)}</b></span><br>
-                        <span>Cấp độ: <b>${theme.label}</b></span>
+                        <span>Cấp độ: <b>${escapeHtml(theme.label)}</b></span>
                     </div>
                 `);
             }
@@ -1510,7 +1569,8 @@ async function handleMapClick(e) {
 }
 
 function selectLocation(lat, lon, interp, locationName) {
-    state.selectedPoint = { lat, lon, interp, locationName };
+    state.pointSeq = (state.pointSeq || 0) + 1;
+    state.selectedPoint = { lat, lon, interp, locationName, isWard: false };
     state.selectedCellId = interp.nearestCell ? interp.nearestCell.cell_id : null;
     state.selectedCellProps = interp.nearestCell;
 
@@ -1534,10 +1594,10 @@ function selectLocation(lat, lon, interp, locationName) {
 
     marker.bindTooltip(`
         <div style="font-size: 11px; line-height: 1.4;">
-            <strong><i class="fa-solid fa-location-dot" style="color: #2563eb;"></i> ${locationName}</strong><br>
+            <strong><i class="fa-solid fa-location-dot" style="color: #2563eb;"></i> ${escapeHtml(locationName)}</strong><br>
             <span>Tọa độ: ${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E</span><br>
             <span>Chỉ số TVDI: <b style="color: ${theme.scoreColor}; font-weight: 800;">${interp.value.toFixed(3)}</b></span><br>
-            <span>Cấp độ: <b>${theme.label}</b></span>
+            <span>Cấp độ: <b>${escapeHtml(theme.label)}</b></span>
         </div>
     `, { direction: 'top', offset: [0, -10] });
 
@@ -1765,7 +1825,7 @@ function renderPointDetail(lat, lon, tvdiVal, theme, locationName, values = null
         <div class="cell-coords-tag" style="background: #f8fafc; padding: 10px 13px; border-radius: 8px; font-size: 0.82rem; color: #334155; margin-bottom: 10px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
             <div style="font-weight: 700; color: #1e293b; font-size: 0.9rem; margin-bottom: 5px; display: flex; align-items: center; gap: 7px;">
                 <i class="fa-solid fa-location-dot" style="color: #2563eb; font-size: 1rem;"></i>
-                <span id="selected-location-name">${locationName}</span>
+                <span id="selected-location-name">${escapeHtml(locationName)}</span>
             </div>
             <div style="color: #64748b; font-size: 0.77rem; display: flex; align-items: center; padding-top: 3px; border-top: 1px dashed #e2e8f0;">
                 <span><i class="fa-solid fa-crosshairs" style="color: #2563eb; margin-right: 4px;"></i>${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E</span>
@@ -1816,9 +1876,17 @@ function renderPointDetail(lat, lon, tvdiVal, theme, locationName, values = null
     const btnTree = document.getElementById('btn-ward-tree-scenario-action');
     if (btnTree) {
         btnTree.addEventListener('click', () => {
-            const ward = (state.wards.list || []).find(w => w.ward_id === state.wards.selectedWardId)
-                || (state.wards.allList || []).find(w => w.ward_id === state.wards.selectedWardId)
-                || { name: locationName, lat, lon, ndvi: ndviVal, tvdi: tvdiVal, lst_c: lstVal, area_km2: 2.5 };
+            const allWards = (state.wards.allList && state.wards.allList.length) ? state.wards.allList : (state.wards.list || []);
+            let ward = null;
+            if (state.selectedPoint && state.selectedPoint.isWard && state.wards.selectedWardId) {
+                ward = allWards.find(w => w.ward_id === state.wards.selectedWardId);
+            } else if (locationName) {
+                const normLoc = removeVietnameseTones(locationName);
+                ward = allWards.find(w => w.name && normLoc.includes(removeVietnameseTones(w.name)));
+            }
+            if (!ward) {
+                ward = { name: locationName, lat, lon, ndvi: ndviVal, tvdi: tvdiVal, lst_c: lstVal, area_km2: 2.5 };
+            }
             if (window.TreeBenefitModule && typeof window.TreeBenefitModule.openModal === 'function') {
                 window.TreeBenefitModule.openModal(ward);
             }
@@ -1839,6 +1907,35 @@ function renderSelectedCell(props, clickInfo = null) {
 
 // --- 10. Tải và Vẽ biểu đồ Chuỗi thời gian (Dự báo 7 ngày giả lập / 12 tháng AI / Lịch sử 2017–2025) ---
 let chartRequestId = 0;
+const CHART_CACHE_TTL_MS = 15000;
+const inFlightChartMap = {};
+
+function fetchChartJsonCached(url) {
+    const now = Date.now();
+    const cached = state.chartCache && state.chartCache[url];
+    if (cached && (now - cached.ts) < CHART_CACHE_TTL_MS) {
+        return Promise.resolve(cached.data);
+    }
+    if (inFlightChartMap[url]) {
+        return inFlightChartMap[url];
+    }
+    const reqPromise = fetch(url)
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .then(data => {
+            if (!state.chartCache) state.chartCache = {};
+            state.chartCache[url] = { ts: Date.now(), data };
+            return data;
+        })
+        .finally(() => {
+            delete inFlightChartMap[url];
+        });
+    inFlightChartMap[url] = reqPromise;
+    return reqPromise;
+}
+
 async function loadChartData() {
     const requestId = ++chartRequestId;
     document.getElementById('monthly-validation').hidden = true;
@@ -1864,7 +1961,7 @@ async function loadChartData() {
     const trendWrapper = document.getElementById('stat-tvdi-trend-wrapper');
     const titleEl = document.getElementById('chart-card-title');
     if (titleEl) {
-        if (is7Days) titleEl.innerText = showTech ? `Dự báo ${INDEX_META[idxKey].label} 7 ngày (Giả lập)` : `Dự báo ${INDEX_META[idxKey].label} 7 ngày`;
+        if (is7Days) titleEl.innerText = showTech ? `Dự báo ${INDEX_META[idxKey].label} 7 ngày (Giả lập)` : `Dự báo ${INDEX_META[idxKey].label} 7 ngày (Mô phỏng)`;
         else if (is12Months) titleEl.innerText = showTech ? `Dự báo ${INDEX_META[idxKey].label} 12 tháng (AI)` : `Dự báo ${INDEX_META[idxKey].label} 12 tháng`;
         else if (isCompare) titleEl.innerText = 'TVDI thực tế vs dự báo AI';
         else titleEl.innerText = `Chuỗi thời gian ${INDEX_META[idxKey].label}`;
@@ -1895,9 +1992,7 @@ async function loadChartData() {
         const target = isCell ? cellId : 'overall';
         try {
             const endpoint = is7Days ? '7days' : '12months';
-            const res = await fetch(`/api/prediction/series/${endpoint}/${target}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
+            const data = await fetchChartJsonCached(`/api/prediction/series/${endpoint}/${target}`);
             if (requestId !== chartRequestId) return;
             renderForecastHorizonChart(data);
         } catch (err) {
@@ -1907,9 +2002,7 @@ async function loadChartData() {
         // So sánh TVDI thực tế (Landsat) và dự báo của mô hình Random Forest
         if (trendWrapper) trendWrapper.style.display = 'flex';
         try {
-            const res = await fetch(isCell ? `/api/prediction/series/${cellId}` : '/api/prediction/series/overall');
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
+            const data = await fetchChartJsonCached(isCell ? `/api/prediction/series/${cellId}` : '/api/prediction/series/overall');
             if (requestId !== chartRequestId) return;
             renderCompareChart(data.series || []);
         } catch (err) {
@@ -1921,8 +2014,7 @@ async function loadChartData() {
             const url = isCell
                 ? `/api/series/${cellId}`
                 : `/api/series/overall`;
-            const res = await fetch(url);
-            const data = await res.json();
+            const data = await fetchChartJsonCached(url);
             if (requestId !== chartRequestId) return;
             const locName = state.selectedPoint ? state.selectedPoint.locationName : '';
             const coordsStr = state.selectedPoint
@@ -1976,17 +2068,22 @@ function showMonthlyValidation(data, key) {
         heading.textContent = 'Chưa có kiểm định 12 tháng cho phiên dự báo này';
         note.textContent = '';
         panel.querySelector('table').hidden = true;
+        panel.open = false;
+        if (panel.classList) panel.classList.remove('is-weak');
         return;
     }
     panel.querySelector('table').hidden = false;
     const score = entry[scope];
     const unit = key === 'lst' ? ' °C' : '';
-    heading.textContent = `Kiểm định ${label} · ${area} · R² ${format(score.r2_score)} · MAE ${format(score.mae)}${unit}`;
+    const isWeak = Number.isFinite(score.r2_score) && score.r2_score <= 0;
+    heading.textContent = `Kiểm định ${label} · ${area} · R² ${format(score.r2_score)} · MAE ${format(score.mae)}${unit}${isWeak ? ' · Độ tin cậy thấp (tham khảo)' : ''}`;
+    if (panel.classList) panel.classList.toggle('is-weak', isWeak);
+    panel.open = isWeak;
     const monthId = iso => Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7));
     const first = monthId(data.start_date) - monthId(evaluation.last_observation);
     const last = monthId(data.end_date) - monthId(evaluation.last_observation);
     const beyond = last > entry.by_lead.length ? ' Các bước sau tháng 12 chưa được kiểm định.' : '';
-    const weak = Number.isFinite(score.r2_score) && score.r2_score <= 0 ? ' R² không dương: sai số bình phương bằng hoặc lớn hơn khi dùng trung bình tập kiểm tra.' : '';
+    const weak = isWeak ? ' R² không dương: sai số bình phương bằng hoặc lớn hơn khi dùng trung bình tập kiểm tra.' : '';
     note.textContent = `Kiểm tra trên ${evaluation.origins} mốc phát hành, đối chiếu với quan trắc 2024–2025. Chỉ chấm các ô có số đo trong tháng. R² ${format(score.r2_score)}, RMSE ${format(score.rmse)}${unit}.${weak} Chuỗi đang xem cách tháng quan trắc cuối (${evaluation.last_observation.slice(0, 7)}) từ ${first} đến ${last} tháng.${beyond}`;
     for (const step of entry.by_lead) {
         const row = body.insertRow();
@@ -1997,7 +2094,13 @@ function showMonthlyValidation(data, key) {
 }
 
 function renderForecastHorizonChart(data) {
-    if (!data || !data.series || data.series.length === 0) return;
+    if (!data || !data.series || data.series.length === 0) {
+        if (state.timeSeriesChart) {
+            state.timeSeriesChart.destroy();
+            state.timeSeriesChart = null;
+        }
+        return;
+    }
     const series = data.series;
     state.currentSeriesData = series;
 
@@ -2035,7 +2138,7 @@ function renderForecastHorizonChart(data) {
         } else {
             const startShort = data.start_date.substring(5).replace('-', '/');
             const endShort = data.end_date.substring(5).replace('-', '/');
-            rangeTextEl.innerText = showTech ? `7 ngày (Giả lập): ${startShort} → ${endShort}` : `7 ngày: ${startShort} → ${endShort}`;
+            rangeTextEl.innerText = showTech ? `7 ngày (Giả lập): ${startShort} → ${endShort}` : `7 ngày (Mô phỏng): ${startShort} → ${endShort}`;
         }
     }
 
@@ -2045,14 +2148,18 @@ function renderForecastHorizonChart(data) {
     const maxVal = validVals.length ? Math.max(...validVals) : null;
     const minVal = validVals.length ? Math.min(...validVals) : null;
 
-    let trendHtml = `<span style="color: ${data.trend_color}; font-weight: 700;"><i class="fa-solid ${data.trend_icon}"></i> ${data.trend_label}</span>`;
+    let trendHtml = `<span style="color: ${data.trend_color}; font-weight: 700;"><i class="fa-solid ${data.trend_icon}"></i> ${escapeHtml(data.trend_label)}</span>`;
     if (key !== 'tvdi' && validVals.length >= 2) {
         const delta = validVals[validVals.length - 1] - validVals[0];
         const eps = key === 'lst' ? 0.3 : 0.01;
+        const upColor = key === 'ndvi' ? '#10b981' : '#ef4444';
+        const downColor = key === 'ndvi' ? '#ef4444' : '#10b981';
+        const upText = key === 'ndvi' ? 'Tăng phủ xanh' : 'Tăng';
+        const downText = key === 'ndvi' ? 'Giảm phủ xanh' : 'Giảm';
         if (delta > eps) {
-            trendHtml = `<span style="color:#ef4444;font-weight:700;"><i class="fa-solid fa-arrow-trend-up"></i> Tăng (+${delta.toFixed(key === 'lst' ? 1 : 3)})</span>`;
+            trendHtml = `<span style="color:${upColor};font-weight:700;"><i class="fa-solid fa-arrow-trend-up"></i> ${upText} (+${delta.toFixed(key === 'lst' ? 1 : 3)})</span>`;
         } else if (delta < -eps) {
-            trendHtml = `<span style="color:#10b981;font-weight:700;"><i class="fa-solid fa-arrow-trend-down"></i> Giảm (${delta.toFixed(key === 'lst' ? 1 : 3)})</span>`;
+            trendHtml = `<span style="color:${downColor};font-weight:700;"><i class="fa-solid fa-arrow-trend-down"></i> ${downText} (${delta.toFixed(key === 'lst' ? 1 : 3)})</span>`;
         } else {
             trendHtml = `<span style="color:#3b82f6;font-weight:700;"><i class="fa-solid fa-arrow-right"></i> Ổn định</span>`;
         }
@@ -2064,7 +2171,7 @@ function renderForecastHorizonChart(data) {
         { label: 'Trung bình', value: avgVal !== null ? formatIndexValue(avgVal, key, false) : '--' },
         { label: 'Cao nhất', value: maxVal !== null ? formatIndexValue(maxVal, key, false) : '--' },
         { label: 'Thấp nhất', value: minVal !== null ? formatIndexValue(minVal, key, false) : '--' },
-        { label: showTech ? (isSim ? 'Xu hướng (Giả lập)' : 'Xu hướng (AI)') : 'Xu hướng', value: trendHtml },
+        { label: showTech ? (isSim ? 'Xu hướng (Giả lập)' : 'Xu hướng (AI)') : (isSim ? 'Xu hướng (Mô phỏng)' : 'Xu hướng'), value: trendHtml },
     ]);
 
     if (state.timeSeriesChart) {
@@ -2124,7 +2231,7 @@ function renderForecastHorizonChart(data) {
                         title: function (items) {
                             const d = series[items[0].dataIndex];
                             const stepLabel = isMonthly ? `Tháng ${d.date.substring(5, 7)}/${d.date.substring(0, 4)}` : `Ngày +${d.step_index - 1} (${d.date})`;
-                            if (!showTech) return stepLabel;
+                            if (!showTech) return isSim ? `${stepLabel} · Mô phỏng tham khảo` : stepLabel;
                             const srcBadge = isSim ? 'Giả lập · Landsat' : 'AI Random Forest';
                             return `${stepLabel} · ${srcBadge}`;
                         },
@@ -2204,7 +2311,13 @@ function getIndexAxisConfig(key, values) {
 }
 
 function renderHistoricalChart(seriesData, title) {
-    if (!seriesData || seriesData.length === 0) return;
+    if (!seriesData || seriesData.length === 0) {
+        if (state.timeSeriesChart) {
+            state.timeSeriesChart.destroy();
+            state.timeSeriesChart = null;
+        }
+        return;
+    }
     state.currentSeriesData = seriesData;
     state.currentSeriesTitle = title;
 
@@ -2378,7 +2491,13 @@ function renderHistoricalChart(seriesData, title) {
 
 // Biểu đồ so sánh TVDI thực tế (Landsat) và giá trị dự báo của mô hình Random Forest
 function renderCompareChart(series) {
-    if (!series || series.length === 0) return;
+    if (!series || series.length === 0) {
+        if (state.timeSeriesChart) {
+            state.timeSeriesChart.destroy();
+            state.timeSeriesChart = null;
+        }
+        return;
+    }
     const locBar = document.getElementById('chart-location-bar');
     const locNameEl = document.getElementById('chart-loc-name');
     const rangeTextEl = document.getElementById('chart-range-text');
@@ -2568,12 +2687,11 @@ async function loadRegionalStats(dateStr, isFuture = false, gridData = null) {
             droughtPercent = totalActive > 0 ? ((droughtCellCount / totalActive) * 100).toFixed(1) : 0;
         }
 
-        const avgEl = document.getElementById('metric-avg-tvdi');
         const pctEl = document.getElementById('metric-drought-percent');
-        if (avgEl) avgEl.innerHTML = isFuture ? `${avgTvdi} <small class="metric-tag">${isAdminUser() ? 'Dự báo AI' : 'Dự báo'}</small>` : avgTvdi;
         if (pctEl) pctEl.innerText = `${droughtPercent}%`;
 
         updateIndexCards(gridData, isFuture);
+        checkDroughtAlerts(gridData);
 
         const listContainer = document.getElementById('drought-breakdown-list');
         if (listContainer) {
@@ -2598,6 +2716,40 @@ async function loadRegionalStats(dateStr, isFuture = false, gridData = null) {
         }
     } catch (err) {
         console.error('Lỗi khi tải thống kê toàn vùng:', err);
+    }
+}
+
+function playDroughtBeep() {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 660;
+        gain.gain.setValueAtTime(0.06, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.19);
+        setTimeout(() => ctx.close().catch(() => {}), 300);
+    } catch (e) { /* ignore autoplay blocks */ }
+}
+
+function checkDroughtAlerts(gridData) {
+    if (state.autoAlertsEnabled === false || !gridData || !Array.isArray(gridData.features)) return;
+    const key = state.currentDataKey || state.currentDate;
+    if (!key || state.lastAlertDataKey === key) return;
+    const severeCount = gridData.features.reduce((acc, f) => {
+        const v = getIndexValue(f.properties, 'tvdi');
+        return (v !== null && v > 0.8) ? acc + 1 : acc;
+    }, 0);
+    if (severeCount > 0) {
+        state.lastAlertDataKey = key;
+        showToast(`Cảnh báo hạn nặng: ${severeCount} ô lưới có TVDI > 0.8.`);
+        if (state.soundAlertsEnabled !== false) playDroughtBeep();
     }
 }
 
@@ -2925,9 +3077,7 @@ function bindTVDILayerControls() {
             if (valAlphaTVDI) valAlphaTVDI.innerText = Math.round(v * 100) + '%';
             if (state.geeTileLayer) state.geeTileLayer.setOpacity(v);
             else if (state.localRasterLayer) state.localRasterLayer.setOpacity(v);
-        });
-        alphaTVDI.addEventListener('change', () => {
-            if (state.displayMode === 'ward') renderWardsBoundary();
+            if (state.displayMode === 'ward') updateWardsBoundaryOpacity();
         });
     }
 
@@ -2960,7 +3110,7 @@ function bindTVDILayerControls() {
         alphaBoundary.addEventListener('input', (e) => {
             state.layerOpacities.boundary = parseFloat(e.target.value);
             if (valAlphaBoundary) valAlphaBoundary.innerText = Math.round(state.layerOpacities.boundary * 100) + '%';
-            renderBoundary();
+            updateBoundaryOpacity();
         });
     }
 
@@ -2979,7 +3129,7 @@ function bindTVDILayerControls() {
         alphaWards.addEventListener('input', (e) => {
             state.layerOpacities.wardsBoundary = parseFloat(e.target.value);
             if (valAlphaWards) valAlphaWards.innerText = Math.round(state.layerOpacities.wardsBoundary * 100) + '%';
-            renderWardsBoundary();
+            updateWardsBoundaryOpacity();
         });
     }
 
@@ -2998,13 +3148,9 @@ function bindTVDILayerControls() {
         alphaGrid.addEventListener('input', (e) => {
             state.layerOpacities.gridPoints = parseFloat(e.target.value);
             if (valAlphaGrid) valAlphaGrid.innerText = Math.round(state.layerOpacities.gridPoints * 100) + '%';
-            renderGridCentroidPoints();
+            updateGridPointsOpacity();
         });
     }
-}
-
-function setupGEELayerControls() {
-    // Các sự kiện của lớp dữ liệu đã được gắn trong setupUnifiedLayersControl() (tránh gắn trùng 2 lần)
 }
 
 // --- 14. Kiểm tra & Quản lý Kết nối Google Earth Engine ---
@@ -3014,18 +3160,16 @@ async function checkGEEConnection() {
         const data = await res.json();
         state.geeStatus = data;
 
-        const badge = document.getElementById('gee-header-badge');
         const alertBox = document.getElementById('gee-modal-status');
         const projInput = document.getElementById('gee-project-input');
 
-        if (data.project_id && data.project_id !== '(Mặc định)') {
+        if (projInput && data.project_id && data.project_id !== '(Mặc định)') {
             projInput.value = data.project_id;
         }
 
         const dropBadge = document.getElementById('gee-dropdown-badge');
 
         if (data.initialized) {
-            if (badge) badge.innerHTML = '<span style="color: #4ade80; font-weight: 600;">GEE Live: Đã kết nối</span>';
             if (dropBadge) {
                 dropBadge.innerText = 'Đã kết nối';
                 dropBadge.style.color = '#16a34a';
@@ -3033,10 +3177,9 @@ async function checkGEEConnection() {
             }
             if (alertBox) {
                 alertBox.className = 'gee-modal-alert success';
-                alertBox.innerHTML = `<strong><i class="fa-solid fa-circle-check"></i> Đã kết nối thành công với Google Earth Engine!</strong><br>Dự án: <code>${data.project_id}</code>. Lớp ảnh viễn thám 30m đang được truyền trực tiếp từ Google Cloud.`;
+                alertBox.innerHTML = `<strong><i class="fa-solid fa-circle-check"></i> Đã kết nối thành công với Google Earth Engine!</strong><br>Dự án: <code>${escapeHtml(data.project_id || '')}</code>. Lớp ảnh viễn thám 30m đang được truyền trực tiếp từ Google Cloud.`;
             }
         } else if (data.needs_project) {
-            if (badge) badge.innerHTML = '<span style="color: #38bdf8; font-weight: 600;"><i class="fa-solid fa-key"></i> GEE: Cần Project ID</span>';
             if (dropBadge) {
                 dropBadge.innerText = 'Cần Project';
                 dropBadge.style.color = '#0284c7';
@@ -3047,7 +3190,6 @@ async function checkGEEConnection() {
                 alertBox.innerHTML = `<strong><i class="fa-solid fa-circle-check" style="color: #16a34a;"></i> Tài khoản Google đã xác thực thành công!</strong><br>Để hoàn tất, Google Earth Engine yêu cầu bạn nhập <strong>Project ID</strong> (tên Cloud Project của bạn trên GEE Code Editor, ví dụ: <code>ee-tenban</code> hoặc mã project Cloud).`;
             }
         } else {
-            if (badge) badge.innerHTML = '<span style="color: #facc15;">GEE: Chưa kết nối</span>';
             if (dropBadge) {
                 dropBadge.innerText = 'Chưa kết nối';
                 dropBadge.style.color = '#ca8a04';
@@ -3055,7 +3197,7 @@ async function checkGEEConnection() {
             }
             if (alertBox) {
                 alertBox.className = 'gee-modal-alert warning';
-                alertBox.innerHTML = `<strong><i class="fa-solid fa-triangle-exclamation"></i> Chưa xác thực tài khoản Google Earth Engine.</strong><br>${data.error || 'Hệ thống đang hiển thị lớp ảnh viễn thám nội suy chuẩn GEE.'}`;
+                alertBox.innerHTML = `<strong><i class="fa-solid fa-triangle-exclamation"></i> Chưa xác thực tài khoản Google Earth Engine.</strong><br>${escapeHtml(data.error || 'Hệ thống đang hiển thị lớp ảnh viễn thám nội suy chuẩn GEE.')}`;
             }
         }
     } catch (err) {
@@ -3065,24 +3207,10 @@ async function checkGEEConnection() {
 
 function setupGEEModal() {
     const modal = document.getElementById('gee-modal');
-    const btnOpen = document.getElementById('btn-gee-modal');
     const btnClose = document.getElementById('btn-close-gee-modal');
     const btnCancel = document.getElementById('btn-cancel-gee');
     const btnSave = document.getElementById('btn-save-gee-project');
     const projInput = document.getElementById('gee-project-input');
-
-    if (btnOpen) {
-        btnOpen.addEventListener('click', () => {
-            if (!state.auth.is_admin) {
-                showToast('Chức năng Google Earth Engine (GEE) chỉ dành cho Quản trị viên (Admin). Vui lòng đăng nhập!');
-                const loginModal = document.getElementById('login-modal');
-                if (loginModal) loginModal.style.display = 'flex';
-                return;
-            }
-            checkGEEConnection();
-            if (modal) modal.style.display = 'flex';
-        });
-    }
 
     const closeModal = () => { if (modal) modal.style.display = 'none'; };
     if (btnClose) btnClose.addEventListener('click', closeModal);
@@ -3107,12 +3235,17 @@ function setupGEEModal() {
                     },
                     body: JSON.stringify({ project_id: projectId })
                 });
-                const result = await res.json();
+                const result = await res.json().catch(() => ({}));
                 await checkGEEConnection();
+                if (!res.ok || !result.success) {
+                    const errMsg = result.detail || (result.status && result.status.error) || 'Không thể kết nối Google Earth Engine.';
+                    showToast(errMsg);
+                    return;
+                }
                 renderActiveRaster();
                 showToast('Đã lưu cấu hình Google Earth Engine thành công!');
             } catch (e) {
-                alert('Lỗi kết nối: ' + e.message);
+                showToast('Lỗi kết nối: ' + e.message);
             } finally {
                 btnSave.disabled = false;
                 btnSave.innerHTML = '<i class="fa-solid fa-link"></i> Lưu & Thử kết nối';
@@ -3123,7 +3256,20 @@ function setupGEEModal() {
 
 // --- Hằng số & Hàm tiện ích xử lý thời gian linh hoạt (Theo ngày & Theo kỳ) ---
 const START_DATE_STR = '2017-01-01';
-const END_DATE_STR = '2027-12-31'; // Chặn tuyệt đối đến hết năm 2027, không nhảy qua 2028
+
+function getMaxDateStr() {
+    const baseYear = Math.max(2027, new Date().getFullYear() + 2);
+    let maxDate = `${baseYear}-12-31`;
+    if (Array.isArray(state.monthly12Dates) && state.monthly12Dates.length > 0) {
+        const mLast = state.monthly12Dates[state.monthly12Dates.length - 1];
+        if (mLast && mLast > maxDate) maxDate = mLast;
+    }
+    if (Array.isArray(state.daily7Dates) && state.daily7Dates.length > 0) {
+        const dLast = state.daily7Dates[state.daily7Dates.length - 1];
+        if (dLast && dLast > maxDate) maxDate = dLast;
+    }
+    return maxDate;
+}
 
 function dateToDayIndex(dateStr) {
     if (!dateStr) return 0;
@@ -3168,23 +3314,12 @@ function getDiffDaysFromToday(dateStr) {
 // Thiết lập bước nhảy (1 Ngày vs 15 Ngày/Kỳ)
 function setStepUnit(unit) {
     state.stepUnit = unit;
-    const btnStepDay = document.getElementById('btn-step-day');
-    const btnStepCycle = document.getElementById('btn-step-cycle');
-    if (btnStepDay && btnStepCycle) {
-        if (unit === 'day') {
-            btnStepDay.classList.add('active');
-            btnStepCycle.classList.remove('active');
-        } else {
-            btnStepCycle.classList.add('active');
-            btnStepDay.classList.remove('active');
-        }
-    }
     updateButtonTooltips();
 }
 
 function updateButtonTooltips() {
-    const btnPrev = document.getElementById('btn-toolbar-prev') || document.getElementById('btn-timeline-prev');
-    const btnNext = document.getElementById('btn-toolbar-next') || document.getElementById('btn-timeline-next');
+    const btnPrev = document.getElementById('btn-toolbar-prev');
+    const btnNext = document.getElementById('btn-toolbar-next');
     const curr = state.currentDate || getTodayDateStr();
     const diff = getDiffDaysFromToday(curr);
 
@@ -3197,8 +3332,9 @@ function updateButtonTooltips() {
 // Thiết lập mốc ngày chính (hỗ trợ bất kỳ ngày nào do người dùng chọn hoặc tăng/giảm)
 function setDate(targetDateStr) {
     if (!targetDateStr) return;
+    const maxDateStr = getMaxDateStr();
     if (targetDateStr < START_DATE_STR) targetDateStr = START_DATE_STR;
-    if (targetDateStr > END_DATE_STR) targetDateStr = END_DATE_STR;
+    if (targetDateStr > maxDateStr) targetDateStr = maxDateStr;
 
     state.currentDate = targetDateStr;
 
@@ -3213,12 +3349,6 @@ function setDate(targetDateStr) {
 
     const year = targetDateStr.substring(0, 4);
     const selectKey = state.isAIMode ? `forecast:${state.forecastHorizon}` : `obs:${year}`;
-
-    // Đồng bộ slider nếu có
-    const slider = document.getElementById('timeline-range');
-    if (slider) {
-        slider.value = dateToDayIndex(targetDateStr);
-    }
 
     // Danh sách kỳ trong ô chọn nhanh theo chế độ (7 ngày / 12 tháng / năm quan trắc)
     if (state.dateSelectYear !== selectKey) populateDatesForYear(year);
@@ -3250,14 +3380,14 @@ function setDate(targetDateStr) {
     const activeList = state.isAIMode
         ? (state.forecastHorizon === 'daily_7d' ? state.daily7Dates : state.monthly12Dates)
         : state.observedDates;
-    const btnPrev = document.getElementById('btn-toolbar-prev') || document.getElementById('btn-timeline-prev');
-    const btnNext = document.getElementById('btn-toolbar-next') || document.getElementById('btn-timeline-next');
+    const btnPrev = document.getElementById('btn-toolbar-prev');
+    const btnNext = document.getElementById('btn-toolbar-next');
     if (activeList && activeList.length > 0) {
         if (btnPrev) btnPrev.disabled = (targetDateStr <= activeList[0]);
         if (btnNext) btnNext.disabled = (targetDateStr >= activeList[activeList.length - 1]);
     } else {
         if (btnPrev) btnPrev.disabled = (targetDateStr <= START_DATE_STR);
-        if (btnNext) btnNext.disabled = (targetDateStr >= END_DATE_STR);
+        if (btnNext) btnNext.disabled = (targetDateStr >= maxDateStr);
     }
 
     updateButtonTooltips();
@@ -3283,11 +3413,18 @@ async function fetchWithTimeout(url, ms = 12000) {
 
 async function initTimeline() {
     try {
-        const [datesRes, dailyRes, monthlyRes] = await Promise.all([
-            fetch('/api/dates'),
-            fetchWithTimeout('/api/prediction/dates?horizon=daily_7d', 12000).catch(() => ({ ok: false, json: async () => [] })),
-            fetchWithTimeout('/api/prediction/dates?horizon=monthly_12m', 12000).catch(() => ({ ok: false, json: async () => [] })),
+        let [datesRes, dailyRes, monthlyRes] = await Promise.all([
+            fetchWithTimeout('/api/dates', 45000),
+            fetchWithTimeout('/api/prediction/dates?horizon=daily_7d', 45000).catch(() => ({ ok: false, json: async () => [] })),
+            fetchWithTimeout('/api/prediction/dates?horizon=monthly_12m', 45000).catch(() => ({ ok: false, json: async () => [] })),
         ]);
+
+        if (datesRes.ok && (!dailyRes.ok || !monthlyRes.ok)) {
+            [dailyRes, monthlyRes] = await Promise.all([
+                dailyRes.ok ? dailyRes : fetchWithTimeout('/api/prediction/dates?horizon=daily_7d', 45000).catch(() => ({ ok: false, json: async () => [] })),
+                monthlyRes.ok ? monthlyRes : fetchWithTimeout('/api/prediction/dates?horizon=monthly_12m', 45000).catch(() => ({ ok: false, json: async () => [] })),
+            ]);
+        }
 
         const dates = await datesRes.json();
         state.observedDates = [...dates].sort();
@@ -3297,24 +3434,17 @@ async function initTimeline() {
 
         const todayStr = getTodayDateStr();
         if (!Array.isArray(dailyDates) || dailyDates.length === 0) {
-            dailyDates = Array.from({ length: 7 }, (_, i) => addDays(todayStr, i)).filter(d => d <= END_DATE_STR);
+            dailyDates = Array.from({ length: 7 }, (_, i) => addDays(todayStr, i));
         }
-        state.daily7Dates = dailyDates.filter(d => d <= END_DATE_STR).sort();
-        state.monthly12Dates = (Array.isArray(monthlyDates) ? monthlyDates : []).filter(d => d <= END_DATE_STR).sort();
+        state.daily7Dates = dailyDates.filter(Boolean).sort();
+        state.monthly12Dates = (Array.isArray(monthlyDates) ? monthlyDates : []).filter(Boolean).sort();
+        const maxDateStr = getMaxDateStr();
         state.forecastDates = [...new Set([...state.daily7Dates, ...state.monthly12Dates])].sort();
-        state.dates = [...new Set([...state.observedDates, ...state.forecastDates])].filter(d => d <= END_DATE_STR).sort();
+        state.dates = [...new Set([...state.observedDates, ...state.forecastDates])].filter(d => d <= maxDateStr).sort();
 
         if (state.dates.length === 0) return;
 
-        // Khởi tạo thanh trượt: theo đơn vị ngày từ START_DATE_STR đến END_DATE_STR
-        const slider = document.getElementById('timeline-range');
-        if (slider) {
-            slider.min = 0;
-            slider.max = dateToDayIndex(END_DATE_STR);
-            slider.step = 1;
-        }
-
-        // Mặc định khởi động vào chế độ Dự báo 7 ngày (Giả lập · Landsat) tại Hôm nay
+        // Mặc định khởi động vào chế độ Dự báo 7 ngày (Mô phỏng · Landsat) tại Hôm nay
         state.isAIMode = true;
         state.forecastHorizon = 'daily_7d';
         state.chartMode = '7days';
@@ -3330,6 +3460,9 @@ async function initTimeline() {
         // Event listeners (an toàn với kiểm tra null)
         const dateSelect = document.getElementById('date-select');
         const toolbarDatePicker = document.getElementById('toolbar-date-picker');
+        if (toolbarDatePicker) {
+            toolbarDatePicker.max = maxDateStr;
+        }
 
         if (dateSelect) {
             dateSelect.addEventListener('change', (e) => {
@@ -3340,25 +3473,38 @@ async function initTimeline() {
         if (toolbarDatePicker) {
             toolbarDatePicker.addEventListener('change', (e) => {
                 if (!e.target.value) return;
-                const val = e.target.value;
-                if (val < '2026-01-01' && state.isAIMode) {
-                    state.isAIMode = false;
-                    setStepUnit('cycle');
+                let val = e.target.value;
+                if (val < '2026-01-01') {
+                    if (state.isAIMode) {
+                        state.isAIMode = false;
+                        setStepUnit('cycle');
+                    }
+                    setDate(val);
+                    return;
+                }
+                state.isAIMode = true;
+                const monthStart = `${val.substring(0, 7)}-01`;
+                if (state.forecastHorizon === 'monthly_12m') {
+                    if (state.monthly12Dates.includes(monthStart)) {
+                        val = monthStart;
+                    } else if (state.daily7Dates.includes(val)) {
+                        setForecastHorizon('daily_7d', { skipLoad: true });
+                    }
+                } else {
+                    if (!state.daily7Dates.includes(val) && state.monthly12Dates.includes(monthStart)) {
+                        setForecastHorizon('monthly_12m', { skipLoad: true });
+                        val = monthStart;
+                    } else {
+                        setForecastHorizon('daily_7d', { skipLoad: true });
+                    }
                 }
                 setDate(val);
             });
         }
 
-        if (slider) {
-            slider.addEventListener('input', (e) => {
-                const chosenDate = dayIndexToDate(parseInt(e.target.value, 10));
-                setDate(chosenDate);
-            });
-        }
-
         // Nút Giảm / Tăng mốc thời gian trên Toolbar (bước theo chuỗi đang kích hoạt: 7 ngày / 12 tháng / kỳ quan trắc)
-        const btnPrevDate = document.getElementById('btn-toolbar-prev') || document.getElementById('btn-timeline-prev');
-        const btnNextDate = document.getElementById('btn-toolbar-next') || document.getElementById('btn-timeline-next');
+        const btnPrevDate = document.getElementById('btn-toolbar-prev');
+        const btnNextDate = document.getElementById('btn-toolbar-next');
 
         const getStepList = () => {
             if (state.isAIMode) {
@@ -3395,11 +3541,6 @@ async function initTimeline() {
 
         if (btnPrevDate) attachHoldRepeat(btnPrevDate, stepPrev);
         if (btnNextDate) attachHoldRepeat(btnNextDate, stepNext);
-
-        // Nút tắt tiện ích: Hôm nay trên Toolbar
-        const btnToolbarToday = document.getElementById('btn-toolbar-today');
-        const goToday = () => setForecastHorizon('daily_7d');
-        if (btnToolbarToday) btnToolbarToday.addEventListener('click', goToday);
 
     } catch (err) {
         console.error('Lỗi khởi tạo mốc thời gian:', err);
@@ -3491,27 +3632,7 @@ function populateDatesForYear(year, force = false) {
 }
 
 function updateTimelineUI(dateStr, isFuture = false) {
-    const sliderDateLabel = document.getElementById('slider-date-label');
-    const btnCardToday = document.getElementById('btn-card-today');
-    const statsDateBadge = document.getElementById('stats-date-badge');
     const toolbarDatePicker = document.getElementById('toolbar-date-picker');
-
-    const diff = getDiffDaysFromToday(dateStr);
-    const isToday = (diff === 0);
-    const isTomorrow = (diff === 1);
-    const isMonthly = isFuture && state.forecastHorizon === 'monthly_12m';
-    const isSim = isFuture && state.forecastHorizon === 'daily_7d';
-
-    // Cập nhật trạng thái nút duy nhất [⚡ Hôm nay] trên thanh trượt
-    if (btnCardToday) {
-        if (isToday) {
-            btnCardToday.classList.add('active');
-            btnCardToday.title = 'Đang ở Hôm nay - Nhấp để làm mới';
-        } else {
-            btnCardToday.classList.remove('active');
-            btnCardToday.title = 'Nhấp để quay về Hôm nay';
-        }
-    }
 
     // Đồng bộ nút chọn chế độ (Giám sát thực tế vs Dự báo) và class toolbar
     const btnModeMonitor = document.getElementById('btn-mode-monitor');
@@ -3526,51 +3647,6 @@ function updateTimelineUI(dateStr, isFuture = false) {
 
     if (toolbarDatePicker && toolbarDatePicker.value !== dateStr) {
         toolbarDatePicker.value = dateStr;
-    }
-
-    const btnToolbarToday = document.getElementById('btn-toolbar-today');
-    if (btnToolbarToday) {
-        if (isToday && state.forecastHorizon === 'daily_7d') {
-            btnToolbarToday.classList.add('active');
-            btnToolbarToday.title = 'Đang ở Hôm nay';
-        } else {
-            btnToolbarToday.classList.remove('active');
-            btnToolbarToday.title = 'Nhấp để quay về Dự báo hôm nay (7 ngày)';
-        }
-    }
-
-    const showTech = isAdminUser();
-    let badgeHtml = '';
-    if (isMonthly) {
-        badgeHtml = showTech
-            ? `<span class="pill-rf pill-forecast"><i class="fa-solid fa-brain"></i> AI Tháng ${dateStr.substring(5, 7)}/${dateStr.substring(0, 4)}</span>`
-            : `<span class="pill-rf pill-forecast"><i class="fa-solid fa-calendar-days"></i> Tháng ${dateStr.substring(5, 7)}/${dateStr.substring(0, 4)}</span>`;
-    } else if (isSim) {
-        const tag = isToday ? 'Hôm nay' : (isTomorrow ? 'Ngày mai' : (diff > 0 ? `+${diff} ngày` : 'Dự báo'));
-        badgeHtml = showTech
-            ? `<span class="pill-rf pill-realtime"><i class="fa-solid fa-flask"></i> Giả lập · ${tag}</span>`
-            : `<span class="pill-rf pill-realtime"><i class="fa-solid fa-wand-magic-sparkles"></i> ${tag}</span>`;
-    } else if (diff === -1) {
-        badgeHtml = '<span class="pill-rf pill-yesterday"><i class="fa-solid fa-clock-rotate-left"></i> Hôm qua</span>';
-    } else if (isFuture) {
-        badgeHtml = '<span class="pill-rf pill-forecast"><i class="fa-solid fa-wand-magic-sparkles"></i> Dự báo</span>';
-    } else {
-        badgeHtml = showTech
-            ? '<span class="pill-rf pill-landsat"><i class="fa-solid fa-satellite"></i> Landsat</span>'
-            : '<span class="pill-rf pill-landsat"><i class="fa-solid fa-eye"></i> Quan trắc</span>';
-    }
-
-    if (sliderDateLabel) {
-        sliderDateLabel.innerText = dateStr;
-    }
-
-    if (statsDateBadge) {
-        statsDateBadge.innerHTML = `${badgeHtml} <span>${dateStr}</span>`;
-    }
-
-    const miniTimelineLabel = document.getElementById('timeline-mini-label');
-    if (miniTimelineLabel) {
-        miniTimelineLabel.innerHTML = `${badgeHtml} <span>${dateStr}</span>`;
     }
 }
 
@@ -3631,16 +3707,8 @@ async function initAIMetrics() {
         const data = await res.json();
         state.aiMetrics = data;
 
-        const r2El = document.getElementById('rf-r2-val');
-        const rmseEl = document.getElementById('rf-rmse-val');
-        const maeEl = document.getElementById('rf-mae-val');
-
         const ov = data.overall_metrics || {};
         const gr = data.grid_metrics || {};
-
-        if (r2El && ov.r2_score !== undefined) r2El.innerText = ov.r2_score.toFixed(3);
-        if (rmseEl && ov.rmse !== undefined) rmseEl.innerText = ov.rmse.toFixed(3);
-        if (maeEl && ov.mae !== undefined) maeEl.innerText = ov.mae.toFixed(3);
 
         const ovR2 = document.getElementById('ai-eval-overall-r2');
         const ovRmse = document.getElementById('ai-eval-overall-rmse');
@@ -3692,7 +3760,7 @@ async function initAIMetrics() {
                 row.style.marginBottom = '6px';
                 row.innerHTML = `
                     <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 3px;">
-                        <span><strong style="color: #1e293b;">${featName}</strong> <span style="color: #64748b;">(${desc})</span></span>
+                        <span><strong style="color: #1e293b;">${escapeHtml(featName)}</strong> <span style="color: #64748b;">(${escapeHtml(desc)})</span></span>
                         <span style="font-weight: 700; color: #8b5cf6;">${pct}%</span>
                     </div>
                     <div class="ai-feat-progress-bg">
@@ -3707,7 +3775,7 @@ async function initAIMetrics() {
     }
 }
 
-function setForecastHorizon(horizon, opts = {}) {
+async function setForecastHorizon(horizon, opts = {}) {
     if (horizon !== 'daily_7d' && horizon !== 'monthly_12m') return;
     const prev = state.forecastHorizon;
     state.forecastHorizon = horizon;
@@ -3728,6 +3796,23 @@ function setForecastHorizon(horizon, opts = {}) {
         if (btn) btn.classList.toggle('active', m === targetChartMode);
     });
 
+    if (horizon === 'monthly_12m' && state.monthly12Dates.length === 0) {
+        try {
+            const res = await fetchWithTimeout('/api/prediction/dates?horizon=monthly_12m', 45000);
+            if (res.ok) {
+                const fetched = await res.json();
+                if (Array.isArray(fetched) && fetched.length > 0) {
+                    state.monthly12Dates = fetched.filter(Boolean).sort();
+                    const maxDateStr = getMaxDateStr();
+                    state.forecastDates = [...new Set([...state.daily7Dates, ...state.monthly12Dates])].sort();
+                    state.dates = [...new Set([...state.observedDates, ...state.forecastDates])].filter(d => d <= maxDateStr).sort();
+                    const toolbarDatePicker = document.getElementById('toolbar-date-picker');
+                    if (toolbarDatePicker) toolbarDatePicker.max = maxDateStr;
+                }
+            }
+        } catch (e) { /* ignore cold-start fallback error */ }
+    }
+
     const list = horizon === 'daily_7d' ? state.daily7Dates : state.monthly12Dates;
     const todayStr = getTodayDateStr();
     let targetDate = state.currentDate;
@@ -3743,7 +3828,6 @@ function setForecastHorizon(horizon, opts = {}) {
     populateDatesForYear(targetDate.substring(0, 4), true);
     if (!opts.skipLoad) {
         setDate(targetDate);
-        loadChartData();
     }
 }
 
@@ -3802,15 +3886,8 @@ function setupAIControls() {
 
     // 3. Modal thông số AI
     const modalAI = document.getElementById('ai-modal');
-    const btnOpenAI = document.getElementById('btn-ai-modal');
     const btnCloseAI1 = document.getElementById('btn-close-ai-modal');
     const btnCloseAI2 = document.getElementById('btn-close-ai-modal-footer');
-
-    if (btnOpenAI && modalAI) {
-        btnOpenAI.addEventListener('click', () => {
-            modalAI.style.display = 'flex';
-        });
-    }
 
     const closeAI = () => {
         if (modalAI) modalAI.style.display = 'none';
@@ -3843,9 +3920,9 @@ function setupAIControls() {
     });
 }
 
-// --- 18. Thiết lập các nút Thu gọn / Mở rộng cho Chú giải & Thanh trượt nổi ---
+// --- 18. Thiết lập các nút Thu gọn / Mở rộng cho Chú giải ---
 function setupCollapsibleWidgets() {
-    // 1. Thu gọn / Mở rộng Chú giải bản đồ (Mặc định đóng, mở rộng dọc 8 cấp)
+    // Thu gọn / Mở rộng Chú giải bản đồ (Mặc định đóng, mở rộng dọc 8 cấp)
     const legendCard = document.getElementById('map-legend');
     const btnToggleLegend = document.getElementById('btn-toggle-legend');
 
@@ -3867,25 +3944,6 @@ function setupCollapsibleWidgets() {
                 toggleLegend();
             });
         }
-    }
-
-    // 2. Thu gọn / Mở rộng Thanh trượt thời gian nổi
-    const timelineCard = document.getElementById('timeline-slider-card');
-    const btnToggleTimeline = document.getElementById('btn-toggle-timeline');
-    const miniTrigger = document.getElementById('timeline-mini-trigger');
-
-    if (btnToggleTimeline && timelineCard) {
-        btnToggleTimeline.addEventListener('click', (e) => {
-            e.stopPropagation();
-            timelineCard.classList.add('collapsed');
-        });
-    }
-
-    if (miniTrigger && timelineCard) {
-        miniTrigger.addEventListener('click', (e) => {
-            e.stopPropagation();
-            timelineCard.classList.remove('collapsed');
-        });
     }
 }
 
@@ -4045,7 +4103,7 @@ function setupMobileSheet() {
 function showToast(message, duration = 3500) {
     let toast = document.getElementById('app-toast');
     if (!toast) return;
-    toast.innerHTML = `<i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> <span>${message}</span>`;
+    toast.innerHTML = `<i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> <span>${escapeHtml(message)}</span>`;
     toast.style.display = 'flex';
     clearTimeout(toast._timer);
     toast._timer = setTimeout(() => {
@@ -4128,15 +4186,17 @@ function setupAuth() {
     const btnAdminRetrain = document.getElementById('btn-admin-retrain-ai');
     const retrainStatus = document.getElementById('retrain-status-text');
 
+    let lastAuthIsAdmin = !!(state.auth && (state.auth.is_admin || state.auth.role === 'admin'));
     window.updateAuthUI = updateAuthUI;
     function updateAuthUI() {
         const systemStatus = document.getElementById('system-status');
-        const btnGeeModal = document.getElementById('btn-gee-modal');
         const adminBox = document.getElementById('admin-ai-action-box');
         const regBtn = document.getElementById('btn-auth-register');
 
         const isLoggedIn = !!state.auth.token && (state.auth.role === 'admin' || state.auth.role === 'user');
         const isAdmin = isLoggedIn && (state.auth.is_admin || state.auth.role === 'admin');
+        const authRoleChanged = (lastAuthIsAdmin !== isAdmin);
+        lastAuthIsAdmin = isAdmin;
         document.body.classList.toggle('is-admin', isAdmin);
 
         if (isLoggedIn) {
@@ -4151,7 +4211,7 @@ function setupAuth() {
             if (isAdmin) {
                 if (badgeRoleText) {
                     badgeRoleText.className = 'badge-role admin';
-                    badgeRoleText.innerHTML = `<i class="fa-solid fa-shield-halved"></i> <span id="header-user-name">${uName}</span>`;
+                    badgeRoleText.innerHTML = `<i class="fa-solid fa-shield-halved"></i> <span id="header-user-name">${escapeHtml(uName)}</span>`;
                 }
                 if (userDropdownRole) userDropdownRole.innerText = 'Quản trị viên Hệ thống';
                 if (userDropdownAvatar) {
@@ -4164,7 +4224,7 @@ function setupAuth() {
             } else {
                 if (badgeRoleText) {
                     badgeRoleText.className = 'badge-role user';
-                    badgeRoleText.innerHTML = `<i class="fa-solid fa-user-check"></i> <span id="header-user-name">${uName}</span>`;
+                    badgeRoleText.innerHTML = `<i class="fa-solid fa-user-check"></i> <span id="header-user-name">${escapeHtml(uName)}</span>`;
                 }
                 if (userDropdownRole) userDropdownRole.innerText = 'Người dùng (Đã xác thực)';
                 if (userDropdownAvatar) {
@@ -4173,7 +4233,6 @@ function setupAuth() {
                 }
                 if (adminDropdownTools) adminDropdownTools.style.display = 'none';
                 if (systemStatus) systemStatus.style.display = 'none';
-                if (btnGeeModal) btnGeeModal.style.display = 'none';
                 if (adminBox) adminBox.style.display = 'none';
             }
         } else {
@@ -4190,7 +4249,6 @@ function setupAuth() {
             if (authIcon) authIcon.className = 'fa-solid fa-right-to-bracket';
             if (regBtn) regBtn.style.display = 'inline-flex';
             if (systemStatus) systemStatus.style.display = 'none';
-            if (btnGeeModal) btnGeeModal.style.display = 'none';
             if (adminBox) adminBox.style.display = 'none';
         }
         const btnMon = document.getElementById('btn-mode-monitor');
@@ -4230,6 +4288,7 @@ function setupAuth() {
             if (dSel) dSel.value = state.currentDate;
             updateTimelineUI(state.currentDate, isForecastDate(state.currentDate));
         }
+        updateForecastSourcePill(state.currentView);
         if (typeof updateMapTitle === 'function') updateMapTitle();
         if (state.currentGridData) {
             updateIndexCards(state.currentGridData, state.currentDate ? isForecastDate(state.currentDate) : false);
@@ -4237,7 +4296,7 @@ function setupAuth() {
             const tag = document.getElementById('stats-period-tag');
             if (tag && typeof describeCurrentView === 'function') tag.innerText = describeCurrentView(true);
         }
-        if (state.dates && state.dates.length) {
+        if (authRoleChanged && state.dates && state.dates.length) {
             loadChartData();
         }
         const repModal = document.getElementById('report-modal');
@@ -4303,8 +4362,16 @@ function setupAuth() {
     if (btnDropdownLogout) {
         btnDropdownLogout.addEventListener('click', () => {
             if (confirm('Bạn có chắc chắn muốn đăng xuất tài khoản?')) {
+                const oldToken = state.auth && state.auth.token;
+                if (oldToken) {
+                    fetch('/api/auth/logout', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${oldToken}` }
+                    }).catch(() => {});
+                }
                 localStorage.removeItem('tvdi_token');
                 state.auth = {
+                    username: null,
                     role: 'guest',
                     token: null,
                     full_name: 'Khách',
@@ -4407,6 +4474,11 @@ function setupAuth() {
     if (chkAlerts) {
         chkAlerts.addEventListener('change', () => {
             state.autoAlertsEnabled = chkAlerts.checked;
+            localStorage.setItem('tvdi_alerts', chkAlerts.checked ? '1' : '0');
+            if (chkAlerts.checked) {
+                state.lastAlertDataKey = '';
+                checkDroughtAlerts(state.currentGridData);
+            }
             showToast(chkAlerts.checked ? 'Đã bật cảnh báo hạn hán tự động (TVDI > 0.8).' : 'Đã tắt cảnh báo hạn hán tự động.');
         });
     }
@@ -4415,6 +4487,7 @@ function setupAuth() {
     if (chkSound) {
         chkSound.addEventListener('change', () => {
             state.soundAlertsEnabled = chkSound.checked;
+            localStorage.setItem('tvdi_sound', chkSound.checked ? '1' : '0');
             showToast(chkSound.checked ? 'Đã bật âm thanh cảnh báo.' : 'Đã tắt âm thanh cảnh báo.');
         });
     }
@@ -4433,6 +4506,7 @@ function setupAuth() {
         btnDropGee.addEventListener('click', () => {
             if (userDropdownMenu) userDropdownMenu.style.display = 'none';
             if (btnUserProfile) btnUserProfile.classList.remove('is-open');
+            checkGEEConnection();
             const geeModal = document.getElementById('gee-modal');
             if (geeModal) geeModal.style.display = 'flex';
         });
@@ -4520,6 +4594,7 @@ function setupAuth() {
                 if (res.ok && data.success) {
                     localStorage.setItem('tvdi_token', data.token);
                     state.auth = {
+                        username: data.username || username,
                         role: data.role,
                         token: data.token,
                         full_name: data.full_name,
@@ -4602,6 +4677,7 @@ function setupAuth() {
                 if (res.ok && data.success) {
                     localStorage.setItem('tvdi_token', data.token);
                     state.auth = {
+                        username: data.username || username,
                         role: data.role,
                         token: data.token,
                         full_name: data.full_name,
@@ -4649,6 +4725,7 @@ function setupAuth() {
                 });
                 const d = await res.json();
                 if (res.ok) {
+                    state.chartCache = {};
                     if (retrainStatus) retrainStatus.innerText = 'Đã gửi yêu cầu huấn luyện thành công!';
                     showToast('Đã khởi chạy tiến trình huấn luyện mô hình AI Random Forest.');
                 } else {
@@ -4664,9 +4741,6 @@ function setupAuth() {
             }
         });
     }
-
-    // Khởi tạo trạng thái giao diện phân quyền ban đầu
-    updateAuthUI();
 }
 
 // --- 18f. Tabs chuyển đổi Sidebar (Phân tích vs 167 Phường) ---
@@ -4696,6 +4770,48 @@ function setupSidebarTabs() {
 }
 
 // --- 18g. Module Danh sách & Bộ lọc 167 Phường / Xã (Yêu cầu 1 & 2) ---
+function filterAndSortWards(allList, sortBy = 'tvdi_desc', thresholds = null) {
+    if (!Array.isArray(allList)) return [];
+    const t = thresholds || {};
+    const hasNum = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+
+    const filtered = allList.filter((w) => {
+        if (!w) return false;
+        if (hasNum(t.min_lst) && (!hasNum(w.lst_c) || Number(w.lst_c) < Number(t.min_lst))) return false;
+        if (hasNum(t.max_lst) && (!hasNum(w.lst_c) || Number(w.lst_c) > Number(t.max_lst))) return false;
+        if (hasNum(t.min_ndvi) && (!hasNum(w.ndvi) || Number(w.ndvi) < Number(t.min_ndvi))) return false;
+        if (hasNum(t.max_ndvi) && (!hasNum(w.ndvi) || Number(w.ndvi) > Number(t.max_ndvi))) return false;
+        if (hasNum(t.min_tvdi) && (!hasNum(w.tvdi) || Number(w.tvdi) < Number(t.min_tvdi))) return false;
+        if (hasNum(t.max_tvdi) && (!hasNum(w.tvdi) || Number(w.tvdi) > Number(t.max_tvdi))) return false;
+        return true;
+    });
+
+    const cmpNum = (va, vb, desc) => {
+        const aOk = hasNum(va);
+        const bOk = hasNum(vb);
+        if (!aOk && !bOk) return 0;
+        if (!aOk) return 1;
+        if (!bOk) return -1;
+        return desc ? (Number(vb) - Number(va)) : (Number(va) - Number(vb));
+    };
+
+    const sorted = filtered.slice().sort((a, b) => {
+        switch (sortBy) {
+            case 'lst_desc': return cmpNum(a.lst_c, b.lst_c, true);
+            case 'lst_asc': return cmpNum(a.lst_c, b.lst_c, false);
+            case 'ndvi_asc': return cmpNum(a.ndvi, b.ndvi, false);
+            case 'ndvi_desc': return cmpNum(a.ndvi, b.ndvi, true);
+            case 'tvdi_asc': return cmpNum(a.tvdi, b.tvdi, false);
+            case 'name_asc': return String(a.name || '').localeCompare(String(b.name || ''), 'vi');
+            case 'tvdi_desc':
+            default: return cmpNum(a.tvdi, b.tvdi, true);
+        }
+    });
+
+    return sorted.map((w, idx) => ({ ...w, rank: idx + 1 }));
+}
+if (typeof window !== 'undefined') window.filterAndSortWards = filterAndSortWards;
+
 function setupWardsModule() {
     const btnSortLst = document.getElementById('btn-sort-lst');
     const btnSortNdvi = document.getElementById('btn-sort-ndvi');
@@ -4713,12 +4829,35 @@ function setupWardsModule() {
         state.wards.markersLayer = L.featureGroup().addTo(map);
     }
 
+    function applyLocalWardsOrFetch() {
+        const ready = state.wards.source
+            && state.wards.source.viewKey === state.currentView?.key
+            && Array.isArray(state.wards.allList)
+            && state.wards.allList.length > 0;
+        if (!ready) {
+            loadWardsData();
+            return;
+        }
+        state.wards.allList = filterAndSortWards(state.wards.allList, state.wards.sortBy, null);
+        state.wards.list = isWardFilterActive()
+            ? filterAndSortWards(state.wards.allList, state.wards.sortBy, state.wards.thresholds)
+            : state.wards.allList;
+        const exportButton = document.getElementById('btn-export-wards-csv');
+        if (exportButton) exportButton.disabled = !state.wards.list.length;
+        renderWardsTable();
+        renderWardsMapMarkers();
+        if (state.displayMode === 'ward') renderWardsBoundary();
+        if (state.viewMode === '3d' && state.displayMode === 'ward') update3DData();
+        refreshSelectedWardDetail();
+        refreshAnalysisCharts();
+    }
+
     function setSort(mode) {
         state.wards.sortBy = mode;
         if (btnSortLst) btnSortLst.classList.toggle('active', mode === 'lst_desc');
         if (btnSortNdvi) btnSortNdvi.classList.toggle('active', mode === 'ndvi_asc');
         if (btnSortTvdi) btnSortTvdi.classList.toggle('active', mode === 'tvdi_desc');
-        loadWardsData();
+        applyLocalWardsOrFetch();
     }
 
     if (btnSortLst) btnSortLst.addEventListener('click', () => setSort('lst_desc'));
@@ -4730,7 +4869,7 @@ function setupWardsModule() {
             state.wards.thresholds.min_lst = (threshLst && threshLst.value !== '') ? parseFloat(threshLst.value) : null;
             state.wards.thresholds.min_tvdi = (threshTvdi && threshTvdi.value !== '') ? parseFloat(threshTvdi.value) : null;
             state.wards.thresholds.max_ndvi = (threshNdvi && threshNdvi.value !== '') ? parseFloat(threshNdvi.value) : null;
-            loadWardsData();
+            applyLocalWardsOrFetch();
             showToast('Đã áp dụng bộ lọc ngưỡng chỉ số cho 167 phường.');
         });
     }
@@ -4744,7 +4883,7 @@ function setupWardsModule() {
             state.wards.thresholds = { min_lst: null, max_lst: null, min_ndvi: null, max_ndvi: null, min_tvdi: null, max_tvdi: null };
             state.wards.searchQuery = '';
             presets.forEach(p => p.classList.remove('active'));
-            loadWardsData();
+            applyLocalWardsOrFetch();
             showToast('Đã đặt lại hiển thị toàn bộ 167 phường.');
         });
     }
@@ -4753,15 +4892,14 @@ function setupWardsModule() {
         btn.addEventListener('click', () => {
             const hasActive = btn.classList.contains('active');
             presets.forEach(p => p.classList.remove('active'));
+            if (threshLst) threshLst.value = '';
+            if (threshTvdi) threshTvdi.value = '';
+            if (threshNdvi) threshNdvi.value = '';
             if (!hasActive) {
                 btn.classList.add('active');
                 if (btn.dataset.lst && threshLst) threshLst.value = btn.dataset.lst;
                 if (btn.dataset.tvdi && threshTvdi) threshTvdi.value = btn.dataset.tvdi;
                 if (btn.dataset.ndvi && threshNdvi) threshNdvi.value = btn.dataset.ndvi;
-            } else {
-                if (btn.dataset.lst && threshLst) threshLst.value = '';
-                if (btn.dataset.tvdi && threshTvdi) threshTvdi.value = '';
-                if (btn.dataset.ndvi && threshNdvi) threshNdvi.value = '';
             }
             if (btnApply) btnApply.click();
         });
@@ -4848,6 +4986,9 @@ async function loadWardsData(targetDate) {
         if (state.viewMode === '3d' && state.displayMode === 'ward') update3DData();
         refreshSelectedWardDetail();
         refreshAnalysisCharts();
+        if (typeof window !== 'undefined' && window.TreeBenefitModule && typeof window.TreeBenefitModule.refreshWards === 'function') {
+            window.TreeBenefitModule.refreshWards();
+        }
     } catch (e) {
         if (seq !== state.wardsSeq) return;
         state.wards.source = null;
@@ -4977,8 +5118,8 @@ function renderWardsTable() {
                 <td><span class="ward-rank-pill ${isTop3 ? 'top-3' : ''}">#${w.rank}</span></td>
                 <td>
                     <div class="ward-name-cell">
-                        <span class="ward-name-title">${w.name}</span>
-                        <span class="ward-district-sub">${w.district}</span>
+                        <span class="ward-name-title">${escapeHtml(w.name)}</span>
+                        <span class="ward-district-sub">${escapeHtml(w.district)}</span>
                     </div>
                 </td>
                 <td class="text-right">
@@ -4988,7 +5129,7 @@ function renderWardsTable() {
                     <span class="ward-val-badge val-ndvi">${hasNdvi ? w.ndvi : '--'}</span>
                 </td>
                 <td class="text-right">
-                    <span class="ward-val-badge val-tvdi" style="background-color: ${w.color}; color: ${readableTextColor(w.color)}; font-weight: 700;" title="${w.drought_label}">
+                    <span class="ward-val-badge val-tvdi" style="background-color: ${w.color}; color: ${readableTextColor(w.color)}; font-weight: 700;" title="${escapeHtml(w.drought_label)}">
                         ${hasTvdi ? w.tvdi : '--'}
                     </span>
                 </td>
@@ -5008,6 +5149,7 @@ function selectWard(wardId, updateInput = false) {
     const ward = (state.wards.list || []).find(w => w.ward_id === wardId)
         || (state.wards.allList || []).find(w => w.ward_id === wardId);
     if (!ward) return;
+    state.pointSeq = (state.pointSeq || 0) + 1;
     state.wards.selectedWardId = wardId;
 
     // Cập nhật ô tìm kiếm trên thanh điều khiển nếu có yêu cầu
@@ -5108,14 +5250,14 @@ function selectWard(wardId, updateInput = false) {
             .setContent(`
                 <div style="font-family: inherit; min-width: 230px; padding: 4px;">
                     <div style="font-size: 0.72rem; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; display: flex; justify-content: space-between; align-items: center;">
-                        <span>${ward.type} • ${ward.district}</span>
+                        <span>${escapeHtml(ward.type)} • ${escapeHtml(ward.district)}</span>
                         <span style="background: #f1f5f9; padding: 1px 6px; border-radius: 4px; color: #334155;">#${ward.rank || '--'}</span>
                     </div>
                     <h3 style="margin: 3px 0 6px 0; font-size: 1.08rem; color: #0f172a; font-weight: 800;">
-                        ${ward.name}
+                        ${escapeHtml(ward.name)}
                     </h3>
                     <div style="font-size: 0.77rem; color: #475569; margin-bottom: 8px;">
-                        <i class="fa-solid fa-map-location-dot" style="color: #2563eb; margin-right: 4px;"></i>${ward.province || 'TP. Hồ Chí Minh'}
+                        <i class="fa-solid fa-map-location-dot" style="color: #2563eb; margin-right: 4px;"></i>${escapeHtml(ward.province || 'TP. Hồ Chí Minh')}
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;">
                         <div style="background: #fff7ed; padding: 5px 8px; border-radius: 6px; border: 1px solid #fed7aa;">
@@ -5133,7 +5275,7 @@ function selectWard(wardId, updateInput = false) {
                             <strong style="font-size: 1.08rem; font-weight: 800; color: ${theme.scoreColor};">${(ward.tvdi !== null && ward.tvdi !== undefined) ? Number(ward.tvdi).toFixed(3) : '--'}</strong>
                         </div>
                         <span style="background-color: ${theme.badgeBg}; color: ${theme.badgeText}; border: 1px solid ${theme.badgeBorder}; padding: 3px 8px; border-radius: 4px; font-size: 0.74rem; font-weight: 700;">
-                            ${ward.drought_label || theme.label}
+                            ${escapeHtml(ward.drought_label || theme.label)}
                         </span>
                     </div>
                 </div>
@@ -5183,7 +5325,7 @@ function renderWardsMapMarkers() {
 
         const lstTxt = (w.lst_c !== null && w.lst_c !== undefined) ? `${w.lst_c}°C` : '--';
         const tvdiTxt = (w.tvdi !== null && w.tvdi !== undefined) ? w.tvdi : '--';
-        circle.bindTooltip(`<strong>${w.name}</strong> (${w.district})<br>LST: ${lstTxt} | TVDI: ${tvdiTxt}`, {
+        circle.bindTooltip(`<strong>${escapeHtml(w.name)}</strong> (${escapeHtml(w.district)})<br>LST: ${lstTxt} | TVDI: ${tvdiTxt}`, {
             direction: 'top',
             offset: [0, -6],
             className: 'ward-map-tooltip'
@@ -5271,8 +5413,6 @@ function setup3DView() {
 function setupAnimationController() {
     const btnPlay = document.getElementById('btn-anim-play');
     const speedSelect = document.getElementById('anim-speed-select');
-    const rangeSelect = document.getElementById('anim-range-select');
-    const loopSelect = document.getElementById('anim-loop-select');
     const hudBadge = document.getElementById('anim-hud-badge');
     const hudText = document.getElementById('anim-hud-text');
 
@@ -5293,11 +5433,10 @@ function setupAnimationController() {
         }
     }
 
-    // Xác định chính xác danh sách các mốc ngày theo khoảng thời gian người dùng chọn
+    // Xác định chính xác danh sách các mốc ngày theo chế độ đang xem
     function getAnimationDates() {
         if (!state.dates || state.dates.length === 0) return [];
 
-        const rangeMode = rangeSelect ? rangeSelect.value : 'auto';
         const currDate = state.currentDate || (state.dates && state.dates[state.currentDateIndex]) || '';
         const inForecast = state.isAIMode || isForecastDate(currDate);
 
@@ -5323,18 +5462,10 @@ function setupAnimationController() {
             return [];
         }
 
-        if (rangeMode === 'forecast' || (rangeMode === 'auto' && inForecast)) {
+        if (inForecast) {
             return forecastList.length > 0 ? forecastList : state.dates;
-        } else if (rangeMode === 'year') {
-            const selYear = currDate.substring(0, 4);
-            const baseList = inForecast ? forecastList : historicalList;
-            const yearList = baseList.filter(d => d.startsWith(selYear));
-            return yearList.length > 0 ? yearList : baseList;
-        } else if (rangeMode === 'monitor' || (rangeMode === 'auto' && !inForecast)) {
-            return historicalList.length > 0 ? historicalList : state.dates;
         }
-
-        return state.dates;
+        return historicalList.length > 0 ? historicalList : state.dates;
     }
 
     function startAnim() {
@@ -5352,7 +5483,6 @@ function setupAnimationController() {
         if (hudBadge) hudBadge.style.display = 'inline-flex';
 
         const speed = speedSelect ? parseInt(speedSelect.value, 10) || 1200 : 1200;
-        const loopMode = loopSelect ? loopSelect.value : 'stop';
         const aggKeyLen = (!isForecastDate(state.currentDate) && state.aggregation === 'month') ? 7
             : ((!isForecastDate(state.currentDate) && state.aggregation === 'year') ? 4 : 0);
 
@@ -5370,14 +5500,8 @@ function setupAnimationController() {
         state.animation.timer = setInterval(async () => {
             subIndex++;
             if (subIndex >= animDates.length) {
-                if (loopMode === 'loop') {
-                    // Lặp lại từ mốc đầu tiên CỦA CHÍNH KHOẢNG NÀY (VD: đầu dự báo 2026-01-01, tuyệt đối không về 2017)
-                    subIndex = 0;
-                } else {
-                    // Dừng ở mốc cuối cùng của chuỗi dự báo / khoảng thời gian
-                    stopAnim(true);
-                    return;
-                }
+                stopAnim(true);
+                return;
             }
 
             const nextDate = animDates[subIndex];
@@ -5473,7 +5597,7 @@ async function loadAdminUsers() {
             renderAdminUsersTable();
             populateActivityUserFilter();
         } else {
-            if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #ef4444; padding: 20px;">Lỗi: ${data.detail || 'Không có quyền truy cập'}</td></tr>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #ef4444; padding: 20px;">Lỗi: ${escapeHtml(data.detail || 'Không có quyền truy cập')}</td></tr>`;
         }
     } catch (e) {
         if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #ef4444; padding: 20px;">Lỗi kết nối máy chủ khi nạp tài khoản.</td></tr>';
@@ -5515,26 +5639,29 @@ function renderAdminUsersTable() {
             : '<span class="badge-status active"><i class="fa-solid fa-circle-check"></i> Hoạt động</span>';
 
         const isCurrentAdmin = u.username.toLowerCase() === (state.auth.username || '').toLowerCase();
+        const safeUname = escapeHtml(u.username);
+        const safeFname = escapeHtml(u.full_name || '');
+        const safeInit = escapeHtml(initial);
         let actionButtons = '';
 
         if (isAdmin || isCurrentAdmin) {
             actionButtons = `
-                <button class="btn-admin-action pwd" onclick="openAdminResetPassword('${u.username}', '${escapeHtml(u.full_name)}')" title="Đổi mật khẩu">
+                <button type="button" class="btn-admin-action pwd" data-action="pwd" data-username="${safeUname}" data-fullname="${safeFname}" title="Đổi mật khẩu">
                     <i class="fa-solid fa-key"></i> Đổi MK
                 </button>
-                <button class="btn-admin-action logs" onclick="adminFilterUserLogs('${u.username}')" title="Xem nhật ký hoạt động">
+                <button type="button" class="btn-admin-action logs" data-action="logs" data-username="${safeUname}" title="Xem nhật ký hoạt động">
                     <i class="fa-solid fa-clock-rotate-left"></i> Nhật ký
                 </button>
             `;
         } else {
             actionButtons = `
-                <button class="btn-admin-action ${isBlocked ? 'unblock' : 'block'}" onclick="adminToggleBlockUser('${u.username}', ${isBlocked})" title="${isBlocked ? 'Mở khóa tài khoản' : 'Khóa tài khoản này'}">
+                <button type="button" class="btn-admin-action ${isBlocked ? 'unblock' : 'block'}" data-action="toggle" data-username="${safeUname}" data-blocked="${isBlocked ? '1' : '0'}" title="${isBlocked ? 'Mở khóa tài khoản' : 'Khóa tài khoản này'}">
                     <i class="fa-solid ${isBlocked ? 'fa-lock-open' : 'fa-lock'}"></i> ${isBlocked ? 'Mở khóa' : 'Khóa'}
                 </button>
-                <button class="btn-admin-action pwd" onclick="openAdminResetPassword('${u.username}', '${escapeHtml(u.full_name)}')" title="Đổi mật khẩu cho người dùng này">
+                <button type="button" class="btn-admin-action pwd" data-action="pwd" data-username="${safeUname}" data-fullname="${safeFname}" title="Đổi mật khẩu cho người dùng này">
                     <i class="fa-solid fa-key"></i> Đổi MK
                 </button>
-                <button class="btn-admin-action logs" onclick="adminFilterUserLogs('${u.username}')" title="Xem nhật ký hoạt động của user này">
+                <button type="button" class="btn-admin-action logs" data-action="logs" data-username="${safeUname}" title="Xem nhật ký hoạt động của user này">
                     <i class="fa-solid fa-clock-rotate-left"></i> Nhật ký
                 </button>
             `;
@@ -5545,16 +5672,16 @@ function renderAdminUsersTable() {
                 <td style="text-align: center; font-weight: 600; color: #64748b;">${idx + 1}</td>
                 <td>
                     <div class="user-identity">
-                        <div class="user-avatar-sm ${isAdmin ? 'admin' : ''}">${initial}</div>
+                        <div class="user-avatar-sm ${isAdmin ? 'admin' : ''}">${safeInit}</div>
                         <div class="user-name-box">
-                            <span class="user-uname">${escapeHtml(u.username)}</span>
-                            <span class="user-fname">${escapeHtml(u.full_name || '')}</span>
+                            <span class="user-uname">${safeUname}</span>
+                            <span class="user-fname">${safeFname}</span>
                         </div>
                     </div>
                 </td>
                 <td>${roleBadge}</td>
-                <td style="color: #64748b; font-size: 0.72rem;">${u.created_at || '—'}</td>
-                <td style="color: #475569; font-size: 0.72rem; font-weight: 500;">${u.last_login || 'Chưa đăng nhập'}</td>
+                <td style="color: #64748b; font-size: 0.72rem;">${escapeHtml(u.created_at || '—')}</td>
+                <td style="color: #475569; font-size: 0.72rem; font-weight: 500;">${escapeHtml(u.last_login || 'Chưa đăng nhập')}</td>
                 <td>${statusBadge}</td>
                 <td style="text-align: center;">
                     <div style="display: inline-flex; gap: 4px;">
@@ -5597,7 +5724,7 @@ async function loadAdminActivities(filterUser = 'all') {
             if (badgeTotal) badgeTotal.innerText = adminActivitiesCache.length;
             renderAdminActivitiesTable();
         } else {
-            if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #ef4444; padding: 20px;">Lỗi: ${data.detail || ''}</td></tr>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #ef4444; padding: 20px;">Lỗi: ${escapeHtml(data.detail || '')}</td></tr>`;
         }
     } catch (e) {
         if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #ef4444; padding: 20px;">Lỗi kết nối máy chủ khi nạp nhật ký hoạt động.</td></tr>';
@@ -5718,6 +5845,23 @@ function setupAdminUserManagement() {
 
     if (searchUsersInput) searchUsersInput.addEventListener('input', renderAdminUsersTable);
     if (filterStatusSelect) filterStatusSelect.addEventListener('change', renderAdminUsersTable);
+
+    const tbodyUsers = document.getElementById('tbody-admin-users');
+    if (tbodyUsers) {
+        tbodyUsers.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            const uname = btn.dataset.username || '';
+            if (action === 'pwd' && typeof window.openAdminResetPassword === 'function') {
+                window.openAdminResetPassword(uname, btn.dataset.fullname || '');
+            } else if (action === 'logs' && typeof window.adminFilterUserLogs === 'function') {
+                window.adminFilterUserLogs(uname);
+            } else if (action === 'toggle' && typeof window.adminToggleBlockUser === 'function') {
+                window.adminToggleBlockUser(uname, btn.dataset.blocked === '1');
+            }
+        });
+    }
 
     if (filterActUserSelect) {
         filterActUserSelect.addEventListener('change', () => {
@@ -5865,9 +6009,31 @@ function setupGlobalWardSearch() {
     };
 
     const allWards = () => (state.wards.allList && state.wards.allList.length) ? state.wards.allList : (state.wards.list || []);
+    const toolbarEl = document.querySelector ? document.querySelector('.toolbar') : null;
+
+    const positionDropdown = () => {
+        if (!searchContainer || !dropdown) return;
+        const needsFixed = (typeof window !== 'undefined' && window.innerWidth <= 1024)
+            || (toolbarEl && toolbarEl.scrollWidth > toolbarEl.clientWidth);
+        if (!needsFixed || typeof searchContainer.getBoundingClientRect !== 'function') {
+            dropdown.classList.remove('is-fixed');
+            dropdown.style.top = '';
+            dropdown.style.left = '';
+            dropdown.style.width = '';
+            return;
+        }
+        const rect = searchContainer.getBoundingClientRect();
+        const dropWidth = Math.min(Math.max(rect.width, 320), window.innerWidth - 16);
+        const left = Math.max(8, Math.min(rect.right - dropWidth, window.innerWidth - dropWidth - 8));
+        dropdown.classList.add('is-fixed');
+        dropdown.style.top = `${Math.round(rect.bottom + 6)}px`;
+        dropdown.style.left = `${Math.round(left)}px`;
+        dropdown.style.width = `${Math.round(dropWidth)}px`;
+    };
 
     const close = () => {
         dropdown.style.display = 'none';
+        dropdown.classList.remove('is-fixed');
         searchContainer.classList.remove('is-open');
         highlightedIndex = -1;
     };
@@ -5903,6 +6069,7 @@ function setupGlobalWardSearch() {
             }).join('');
         }
         dropdown.style.display = 'block';
+        positionDropdown();
         searchContainer.classList.add('is-open');
     }
 
@@ -6015,6 +6182,17 @@ function setupGlobalWardSearch() {
         searchInput.focus();
     });
 
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('resize', () => {
+            if (dropdown.style.display === 'block') positionDropdown();
+        });
+    }
+    if (toolbarEl && typeof toolbarEl.addEventListener === 'function') {
+        toolbarEl.addEventListener('scroll', () => {
+            if (dropdown.style.display === 'block') positionDropdown();
+        });
+    }
+
     // Đóng danh sách khi bấm ra ngoài
     document.addEventListener('click', (e) => {
         if (searchContainer && !searchContainer.contains(e.target)) close();
@@ -6045,22 +6223,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error('Lỗi khởi tạo bản đồ:', e);
     }
 
-    // 2b. Nút chọn chỉ số LST/NDVI/TVDI, kiểu hiển thị Pixel/Phường, bản đồ nền, tổng hợp thời gian & đồng hồ
+    // 2b. Nút chọn chỉ số LST/NDVI/TVDI, kiểu hiển thị Pixel/Phường, bản đồ nền & tổng hợp thời gian
     try {
         setupMapDisplayControls();
-        startHeaderClock();
     } catch (e) {
         console.error('Lỗi thiết lập điều khiển hiển thị bản đồ:', e);
     }
 
-    // 3. Thiết lập các nút điều khiển lớp GEE
-    try {
-        setupGEELayerControls();
-    } catch (e) {
-        console.error('Lỗi thiết lập lớp GEE:', e);
-    }
-
-    // 4. Thiết lập GEE Modal & kiểm tra trạng thái GEE Live
+    // 3. Thiết lập GEE Modal & kiểm tra trạng thái GEE Live
     try {
         setupGEEModal();
         await checkGEEConnection();
@@ -6068,7 +6238,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error('Lỗi kiểm tra GEE:', e);
     }
 
-    // 5. Thiết lập biểu đồ
+    // 4. Thiết lập biểu đồ
     try {
         setupChartTabs();
         setupChartModes();
@@ -6076,7 +6246,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error('Lỗi thiết lập Tabs & Chế độ biểu đồ:', e);
     }
 
-    // 6. Thiết lập điều khiển và thông số AI
+    // 5. Thiết lập điều khiển và thông số AI
     try {
         setupAIControls();
         await initAIMetrics();
@@ -6084,25 +6254,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error('Lỗi thiết lập AI:', e);
     }
 
-    // 7. Thiết lập nút ẩn / hiện cho Chú giải & Thanh trượt nổi
+    // 6. Thiết lập nút ẩn / hiện cho Chú giải
     try {
         setupCollapsibleWidgets();
     } catch (e) {
         console.error('Lỗi thiết lập nút ẩn/hiện:', e);
     }
 
-    // 8. Khởi tạo chuỗi thời gian & mốc ngày
+    // 7. Khởi tạo chuỗi thời gian & mốc ngày
     try {
         await initTimeline();
     } catch (e) {
         console.error('Lỗi khởi tạo chuỗi thời gian:', e);
     }
 
-    // 9. Nạp biểu đồ chu kỳ 15 ngày toàn vùng ban đầu
+    // 8. Fallback nạp biểu đồ toàn vùng nếu initTimeline chưa chọn được ngày
     try {
-        await loadOverallTimeSeries();
+        if (!state.currentDate) {
+            await loadOverallTimeSeries();
+        }
     } catch (e) {
-        console.error('Lỗi nạp dự báo 15 ngày ban đầu:', e);
+        console.error('Lỗi nạp biểu đồ ban đầu:', e);
     }
 
     // 10. Thiết lập Bản tin & Thành lập bản đồ (Export PDF / PNG / Excel CSV / GeoJSON)
@@ -6155,9 +6327,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error('Lỗi thiết lập Animation:', e);
     }
 
-    // 17. Tải dữ liệu ban đầu cho 167 Phường
+    // 17. Tải dữ liệu ban đầu cho 167 Phường (chỉ fallback nếu initTimeline chưa tải)
     try {
-        await loadWardsData(state.currentDate);
+        if (!state.currentView && state.wards.allList.length === 0) {
+            await loadWardsData(state.currentDate);
+        }
     } catch (e) {
         console.error('Lỗi tải dữ liệu 167 Phường ban đầu:', e);
     }

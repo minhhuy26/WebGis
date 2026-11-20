@@ -339,7 +339,11 @@ def update_monthly_metrics(package):
     write_json_atomic(path, metrics, indent=2)
 
 
-def train_and_populate_monthly_12m(start_month: Optional[date] = None, force_retrain: bool = False) -> Dict:
+def train_and_populate_monthly_12m(
+    start_month: Optional[date] = None,
+    force_retrain: bool = False,
+    seed_only: bool = False,
+) -> Dict:
     start = (start_month or date.today()).replace(day=1)
     months = [_add_months(start, i) for i in range(12)]
     wanted = [d.isoformat() for d in months]
@@ -347,8 +351,14 @@ def train_and_populate_monthly_12m(start_month: Optional[date] = None, force_ret
     package = None
     if not force_retrain and seed_path.is_file():
         candidate = json.loads(seed_path.read_text(encoding="utf-8"))
-        if candidate.get("months") == wanted and candidate.get("evaluation", {}).get("version") == monthly_model.VERSION:
-            package = candidate
+        if candidate.get("evaluation", {}).get("version") == monthly_model.VERSION:
+            cand_months = candidate.get("months") or []
+            if seed_only or cand_months == wanted or any(m >= start.isoformat() for m in cand_months):
+                package = candidate
+                wanted = list(cand_months)
+                months = [date.fromisoformat(m) for m in wanted]
+    if seed_only and package is None:
+        return {"monthly_dates": [], "daily_dates": []}
     trained = package is None
     if trained:
         package = fit_monthly_package(months)

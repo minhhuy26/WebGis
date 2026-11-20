@@ -41,6 +41,7 @@ class Settings:
     # --- Server ---
     API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
     API_PORT: int = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
+    AUTH_SECRET_KEY: str = os.getenv("AUTH_SECRET_KEY", "")
 
     # --- Phân loại mức khô hạn TVDI (8 cấp, bước 0.125) ---
     TVDI_CLASSES = [

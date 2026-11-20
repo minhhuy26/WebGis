@@ -5,18 +5,18 @@ init_users_table.py – Tạo bảng tài khoản tvdi.users và nhật ký ho�
 Kết nối CSDL lấy từ file .env (giống backend). Chạy: python -m backend.scripts.init_users_table
 """
 import sys
-import hashlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from sqlalchemy import text
 from backend.app.database import engine
+from backend.app.routers.auth import hash_password
 
 
 def init_users_table():
-    admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
-    user_hash = hashlib.sha256("user123".encode()).hexdigest()
+    admin_hash = hash_password("admin123")
+    user_hash = hash_password("user123")
 
     with engine.begin() as conn:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS tvdi"))

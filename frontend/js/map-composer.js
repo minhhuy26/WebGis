@@ -6,6 +6,9 @@
  */
 
 const MAP_COMPOSER_DEFAULT_LABELS = [
+    { name: 'Dầu Tiếng', lat: 11.28, lon: 106.38 },
+    { name: 'Bến Cát', lat: 11.16, lon: 106.60 },
+    { name: 'Thủ Dầu Một', lat: 10.98, lon: 106.65 },
     { name: 'Củ Chi', lat: 11.01, lon: 106.49 },
     { name: 'Hóc Môn', lat: 10.89, lon: 106.59 },
     { name: 'TP. Thủ Đức', lat: 10.84, lon: 106.76 },
@@ -13,7 +16,19 @@ const MAP_COMPOSER_DEFAULT_LABELS = [
     { name: 'Bình Chánh', lat: 10.72, lon: 106.56 },
     { name: 'Nhà Bè', lat: 10.67, lon: 106.73 },
     { name: 'Cần Giờ', lat: 10.50, lon: 106.88 },
+    { name: 'TP. Bà Rịa', lat: 10.50, lon: 107.17 },
+    { name: 'TP. Vũng Tàu', lat: 10.36, lon: 107.09 },
+    { name: 'Xuyên Mộc', lat: 10.59, lon: 107.47 },
 ];
+
+function _mcBuildTicks(lo, hi, step = 0.2) {
+    const ticks = [];
+    const start = Math.ceil(lo / step) * step;
+    for (let v = start; v <= hi + 1e-9; v += step) {
+        ticks.push(Math.round(v * 100) / 100);
+    }
+    return ticks;
+}
 
 function _mcDefaultTitle(layerKey) {
     const meta = INDEX_META[layerKey] || INDEX_META.tvdi;
@@ -173,7 +188,8 @@ function _mcDrawScaleBar(ctx, sx, sy, px10km) {
 function _mcDrawLegendPanel(ctx, x, y, w, cfg) {
     const key = cfg.layerKey;
     const meta = INDEX_META[key] || INDEX_META.tvdi;
-    const rangeCfg = (state.vizRange && state.vizRange[key]) ? state.vizRange[key] : { min: meta.min, max: meta.max };
+    const pal = (typeof GEE_COLOR_PALETTES !== 'undefined' && GEE_COLOR_PALETTES[key]) ? GEE_COLOR_PALETTES[key] : { min: 0, max: 1 };
+    const rangeCfg = { min: pal.min, max: pal.max };
 
     ctx.save();
     ctx.fillStyle = '#f8fafc';
@@ -336,10 +352,10 @@ function renderComposedMapCanvas(targetCanvas, overrideScale = null) {
     ctx.fillRect(mapBox.x, mapBox.y, mapBox.w, mapBox.h);
 
     const grid = (typeof computeRasterGrid === 'function') ? computeRasterGrid(cfg.layerKey) : null;
-    const minLon = grid ? grid.minLon : 106.34;
-    const maxLon = grid ? grid.maxLon : 107.03;
-    const minLat = grid ? grid.minLat : 10.36;
-    const maxLat = grid ? grid.maxLat : 11.17;
+    const minLon = grid ? grid.minLon : 106.32;
+    const maxLon = grid ? grid.maxLon : 107.60;
+    const minLat = grid ? grid.minLat : 10.31;
+    const maxLat = grid ? grid.maxLat : 11.51;
     const cosLat = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
 
     const geoW = (maxLon - minLon) * cosLat;
@@ -359,8 +375,8 @@ function renderComposedMapCanvas(targetCanvas, overrideScale = null) {
     ctx.rect(mapBox.x, mapBox.y, mapBox.w, mapBox.h);
     ctx.clip();
 
-    const lonTicks = [106.3, 106.45, 106.6, 106.75, 106.9, 107.05];
-    const latTicks = [10.4, 10.55, 10.7, 10.85, 11.0, 11.15];
+    const lonTicks = _mcBuildTicks(minLon, maxLon, 0.2);
+    const latTicks = _mcBuildTicks(minLat, maxLat, 0.2);
 
     if (cfg.showGraticule) {
         ctx.strokeStyle = 'rgba(100, 116, 139, 0.25)';
@@ -621,8 +637,19 @@ function exportComposedMapPDF() {
         document.body.classList.remove('printing-map-composer', 'mc-print-landscape');
     };
     window.addEventListener('afterprint', cleanup, { once: true });
+    if (window.matchMedia) {
+        const mql = window.matchMedia('print');
+        const onChange = (e) => {
+            if (!e.matches) {
+                cleanup();
+                if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+                else if (mql.removeListener) mql.removeListener(onChange);
+            }
+        };
+        if (mql.addEventListener) mql.addEventListener('change', onChange);
+        else if (mql.addListener) mql.addListener(onChange);
+    }
     window.print();
-    setTimeout(cleanup, 2000);
 }
 
 async function openMapComposerModal() {

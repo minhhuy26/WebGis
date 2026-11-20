@@ -40,11 +40,11 @@ function _cleanBulletinTextForRole(str) {
     if (_isBulletinAdmin() || !raw) return raw;
     return raw
         .replace(/\s*\(AI Random Forest\)/gi, '')
-        .replace(/\s*\(Giả lập(?:\s*[·\-]\s*Landsat(?:\s*8\/9)?)?\)/gi, '')
+        .replace(/\s*\(Giả lập(?:\s*[·\-]\s*Landsat(?:\s*8\/9)?)?\)/gi, ' (Mô phỏng tham khảo)')
         .replace(/\(Kỳ\s+Landsat\s+/gi, '(Kỳ ')
         .replace(/Dự báo\s+AI\s+Random Forest/gi, 'Dự báo')
         .replace(/Quan trắc\s+vệ tinh\s+Landsat(?:\s*8\/9)?/gi, 'Quan trắc')
-        .replace(/\s*Số liệu dự báo 7 ngày được mô phỏng giả lập[^.]*\./gi, '')
+        .replace(/Số liệu dự báo 7 ngày được mô phỏng giả lập[^.]*\./gi, 'Số liệu dự báo 7 ngày là dữ liệu mô phỏng tham khảo cho theo dõi ngắn hạn.')
         .replace(/\s*Số liệu dự báo 12 tháng được tính toán từ mô hình AI Random Forest[^.]*\./gi, '')
         .replace(/\s*Số liệu quan trắc thực tế từ ảnh viễn thám Landsat[^.]*\./gi, '')
         .replace(/\s*theo chu kỳ vệ tinh(?=\s)/gi, '')
@@ -59,7 +59,7 @@ function _cleanBulletinTextForRole(str) {
 function _formatHorizonBadge(bType) {
     const isAdmin = _isBulletinAdmin();
     if (!isAdmin) {
-        if (bType === 'daily_7d') return '<span class="bul-badge is-sim"><i class="fa-solid fa-calendar-day"></i> Dự báo 7 ngày</span>';
+        if (bType === 'daily_7d') return '<span class="bul-badge is-sim"><i class="fa-solid fa-flask"></i> Dự báo 7 ngày (Mô phỏng tham khảo)</span>';
         if (bType === 'monthly_12m') return '<span class="bul-badge is-ai"><i class="fa-solid fa-calendar-days"></i> Dự báo 12 tháng</span>';
         if (bType === 'aggregate') return '<span class="bul-badge is-obs"><i class="fa-solid fa-calendar-week"></i> Tổng hợp quan trắc</span>';
         return '<span class="bul-badge is-obs"><i class="fa-solid fa-eye"></i> Quan trắc thực tế</span>';
@@ -71,10 +71,22 @@ function _formatHorizonBadge(bType) {
 }
 
 // Vẽ ảnh Bản đồ chuyên đề trực tiếp lên Canvas từ dữ liệu đang hiển thị (không phụ thuộc tile CORS)
-function renderBulletinMapDataUrl(layerKey = 'tvdi', customSubtitle = '') {
+function _bulBuildTicks(lo, hi, step = 0.2) {
+    const ticks = [];
+    const start = Math.ceil(lo / step) * step;
+    for (let v = start; v <= hi + 1e-9; v += step) {
+        ticks.push(Math.round(v * 100) / 100);
+    }
+    return ticks;
+}
+
+function renderBulletinMapDataUrl(layerKey = 'tvdi', customSubtitle = '', gridOverride = null, forcePixelMode = false) {
     const key = INDEX_META[layerKey] ? layerKey : 'tvdi';
     const meta = INDEX_META[key];
-    const grid = (typeof computeRasterGrid === 'function') ? computeRasterGrid(key) : null;
+    const hasExplicitMissing = (gridOverride === false);
+    const grid = hasExplicitMissing
+        ? null
+        : ((typeof computeRasterGrid === 'function') ? computeRasterGrid(key, gridOverride) : null);
 
     const W = 640;
     const H = 740;
@@ -106,10 +118,10 @@ function renderBulletinMapDataUrl(layerKey = 'tvdi', customSubtitle = '') {
     ctx.fillStyle = '#f8fafc';
     ctx.fillRect(mapBox.x, mapBox.y, mapBox.w, mapBox.h);
 
-    const minLon = grid ? grid.minLon : 106.34;
-    const maxLon = grid ? grid.maxLon : 107.03;
-    const minLat = grid ? grid.minLat : 10.36;
-    const maxLat = grid ? grid.maxLat : 11.17;
+    const minLon = grid ? grid.minLon : 106.32;
+    const maxLon = grid ? grid.maxLon : 107.60;
+    const minLat = grid ? grid.minLat : 10.31;
+    const maxLat = grid ? grid.maxLat : 11.51;
     const cosLat = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
 
     const geoW = (maxLon - minLon) * cosLat;
@@ -131,8 +143,8 @@ function renderBulletinMapDataUrl(layerKey = 'tvdi', customSubtitle = '') {
 
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
     ctx.lineWidth = 0.8;
-    const lonTicks = [106.4, 106.6, 106.8, 107.0];
-    const latTicks = [10.4, 10.6, 10.8, 11.0];
+    const lonTicks = _bulBuildTicks(minLon, maxLon, 0.2);
+    const latTicks = _bulBuildTicks(minLat, maxLat, 0.2);
     lonTicks.forEach(ln => {
         const x = projX(ln);
         ctx.beginPath();
@@ -204,7 +216,7 @@ function renderBulletinMapDataUrl(layerKey = 'tvdi', customSubtitle = '') {
     };
 
     // Nếu đang bật chế độ phường/xã thì tô màu choropleth theo phường
-    if (state.displayMode === 'ward' && state.wardsBoundaryGeoJson && typeof buildWardValueMap === 'function') {
+    if (!forcePixelMode && state.displayMode === 'ward' && state.wardsBoundaryGeoJson && typeof buildWardValueMap === 'function') {
         const vMap = buildWardValueMap(key);
         drawGeoFeatures(state.wardsBoundaryGeoJson, '#334155', 0.7, (feat) => {
             const p = feat.properties || {};
@@ -219,6 +231,14 @@ function renderBulletinMapDataUrl(layerKey = 'tvdi', customSubtitle = '') {
 
     if (state.boundaryGeoJson) {
         drawGeoFeatures(state.boundaryGeoJson, '#0f172a', 1.6);
+    }
+    if (hasExplicitMissing) {
+        ctx.fillStyle = 'rgba(248, 250, 252, 0.88)';
+        ctx.fillRect(mapBox.x + 20, mapBox.y + mapBox.h / 2 - 22, mapBox.w - 40, 44);
+        ctx.fillStyle = '#475569';
+        ctx.font = 'bold 12px "Segoe UI", Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Không có lớp lưới chi tiết cho kỳ bản tin đã lưu này', mapBox.x + mapBox.w / 2, mapBox.y + mapBox.h / 2 + 4);
     }
     ctx.restore();
 
@@ -296,7 +316,8 @@ function renderBulletinMapDataUrl(layerKey = 'tvdi', customSubtitle = '') {
     const legX = mapBox.x + 10;
     const legW = mapBox.w - 20;
     const legH = 14;
-    const cfg = (state.vizRange && state.vizRange[key]) ? state.vizRange[key] : { min: meta.min, max: meta.max };
+    const pal = (typeof GEE_COLOR_PALETTES !== 'undefined' && GEE_COLOR_PALETTES[key]) ? GEE_COLOR_PALETTES[key] : { min: 0, max: 1 };
+    const cfg = { min: pal.min, max: pal.max };
 
     const steps = 64;
     for (let i = 0; i < steps; i++) {
@@ -439,7 +460,7 @@ function renderBulletinChartsDataUrls(seriesPoints = [], levelCounts = {}, activ
     return result;
 }
 
-function renderBulletinPaperFromDraft(draft) {
+function renderBulletinPaperFromDraft(draft, gridOverride = null, forcePixelMode = false) {
     const reportPaper = document.getElementById('report-paper');
     if (!reportPaper || !draft) return;
 
@@ -468,7 +489,7 @@ function renderBulletinPaperFromDraft(draft) {
     const displayTitle = _cleanBulletinTextForRole(draft.title || 'BẢN TIN GIÁM SÁT & DỰ BÁO KHÔ HẠN TVDI');
     const displayHighlights = _cleanBulletinTextForRole(draft.highlights || '');
     const displayRecommendations = _cleanBulletinTextForRole(draft.recommendations || '');
-    const mapDataUrl = renderBulletinMapDataUrl(activeKey, mapSubtitle);
+    const mapDataUrl = renderBulletinMapDataUrl(activeKey, mapSubtitle, gridOverride, forcePixelMode);
     const { seriesImg, distImg } = renderBulletinChartsDataUrls(seriesPoints, levelCounts, activeKey, bType);
     bulletinState.lastMapDataUrl = mapDataUrl;
     bulletinState.lastSeriesChartUrl = seriesImg;
@@ -668,7 +689,30 @@ async function generateReportPaper(savedBulletin = null) {
     if (!reportPaper) return;
 
     if (savedBulletin) {
-        renderBulletinPaperFromDraft(savedBulletin);
+        reportPaper.innerHTML = '<div class="bul-loading"><i class="fa-solid fa-spinner fa-spin"></i> Đang nạp bản đồ &amp; số liệu của bản tin đã lưu...</div>';
+        const bType = savedBulletin.bulletin_type || 'observed';
+        const targetDate = (savedBulletin.summary_stats && savedBulletin.summary_stats.target_date) || savedBulletin.period_start;
+        let gridUrl = null;
+        if (bType === 'aggregate' && savedBulletin.period_start && savedBulletin.period_end) {
+            gridUrl = `/api/grid/aggregate?start=${encodeURIComponent(savedBulletin.period_start)}&end=${encodeURIComponent(savedBulletin.period_end)}`;
+        } else if (bType === 'daily_7d' || bType === 'monthly_12m') {
+            gridUrl = `/api/prediction/grid/${encodeURIComponent(targetDate)}?horizon=${encodeURIComponent(bType)}`;
+        } else if (targetDate) {
+            gridUrl = `/api/grid/${encodeURIComponent(targetDate)}`;
+        }
+        let gridOverride = false;
+        if (gridUrl) {
+            try {
+                const gRes = await fetch(gridUrl);
+                if (gRes.ok) {
+                    const gData = await gRes.json();
+                    if (gData && Array.isArray(gData.features) && gData.features.length > 0) {
+                        gridOverride = gData;
+                    }
+                }
+            } catch (e) { /* keep gridOverride = false */ }
+        }
+        renderBulletinPaperFromDraft(savedBulletin, gridOverride, true);
         return;
     }
 
@@ -724,6 +768,8 @@ async function loadBulletinsHistory() {
             const dPct = st.drought_pct !== null && st.drought_pct !== undefined ? `${Number(st.drought_pct).toFixed(1)}%` : '--';
             const created = b.created_at ? b.created_at.substring(0, 16).replace('T', ' ') : '';
             const safeTitle = _cleanBulletinTextForRole(b.title);
+            const canDelete = _isBulletinAdmin()
+                || (state.auth && state.auth.username && b.created_by === state.auth.username && b.created_by !== 'system');
             return `
                 <div class="bul-history-card" data-id="${b.id}">
                     <div class="bul-history-main">
@@ -739,9 +785,9 @@ async function loadBulletinsHistory() {
                         <button type="button" class="btn btn-primary btn-xs bul-btn-view" data-id="${b.id}">
                             <i class="fa-solid fa-eye"></i> Xem bản tin
                         </button>
-                        <button type="button" class="btn btn-secondary btn-xs bul-btn-del" data-id="${b.id}" title="Xóa bản tin">
+                        ${canDelete ? `<button type="button" class="btn btn-secondary btn-xs bul-btn-del" data-id="${b.id}" title="Xóa bản tin">
                             <i class="fa-solid fa-trash"></i>
-                        </button>
+                        </button>` : ''}
                     </div>
                 </div>
             `;
@@ -759,6 +805,7 @@ async function loadBulletinsHistory() {
 
         listEl.querySelectorAll('.bul-btn-del').forEach(btn => {
             btn.addEventListener('click', async () => {
+                if (!confirm('Bạn có chắc muốn xóa bản tin này khỏi kho lưu trữ?')) return;
                 const bid = Number(btn.dataset.id);
                 const headers = {};
                 if (state.auth && state.auth.token) headers['Authorization'] = `Bearer ${state.auth.token}`;
@@ -766,6 +813,9 @@ async function loadBulletinsHistory() {
                 if (r.ok) {
                     if (typeof showToast === 'function') showToast('Đã xóa bản tin khỏi kho lưu trữ.');
                     loadBulletinsHistory();
+                } else {
+                    const errData = await r.json().catch(() => ({}));
+                    if (typeof showToast === 'function') showToast(errData.detail || `Không thể xóa bản tin (HTTP ${r.status}).`);
                 }
             });
         });
@@ -779,9 +829,15 @@ async function saveCurrentBulletin() {
         if (typeof showToast === 'function') showToast('Chưa có nội dung bản tin để lưu.');
         return;
     }
+    if (!state.auth || !state.auth.token || state.auth.role === 'guest') {
+        if (typeof showToast === 'function') showToast('Vui lòng đăng nhập để lưu bản tin vào CSDL.');
+        return;
+    }
     const d = bulletinState.currentDraft;
-    const headers = { 'Content-Type': 'application/json' };
-    if (state.auth && state.auth.token) headers['Authorization'] = `Bearer ${state.auth.token}`;
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${state.auth.token}`,
+    };
 
     try {
         const res = await fetch('/api/bulletins', {
@@ -798,7 +854,10 @@ async function saveCurrentBulletin() {
                 recommendations: d.recommendations,
             }),
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || `HTTP ${res.status}`);
+        }
         if (typeof showToast === 'function') showToast('Đã lưu Bản tin vào CSDL PostgreSQL!');
         loadBulletinsHistory();
     } catch (err) {
@@ -995,7 +1054,26 @@ function setupReportModal() {
     if (tabHistory) tabHistory.addEventListener('click', () => switchBulletinTab('history'));
     if (btnSaveBul) btnSaveBul.addEventListener('click', saveCurrentBulletin);
     if (btnPngBul) btnPngBul.addEventListener('click', exportBulletinPNG);
-    if (btnPrint) btnPrint.addEventListener('click', () => window.print());
+    if (btnPrint) {
+        btnPrint.addEventListener('click', () => {
+            document.body.classList.add('printing-bulletin');
+            const cleanup = () => document.body.classList.remove('printing-bulletin');
+            window.addEventListener('afterprint', cleanup, { once: true });
+            if (window.matchMedia) {
+                const mql = window.matchMedia('print');
+                const onChange = (e) => {
+                    if (!e.matches) {
+                        cleanup();
+                        if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+                        else if (mql.removeListener) mql.removeListener(onChange);
+                    }
+                };
+                if (mql.addEventListener) mql.addEventListener('change', onChange);
+                else if (mql.addListener) mql.addListener(onChange);
+            }
+            window.print();
+        });
+    }
     if (btnExcel) btnExcel.addEventListener('click', () => { if (typeof exportToCSV === 'function') exportToCSV(); });
     if (btnGeoJson) btnGeoJson.addEventListener('click', () => { if (typeof exportToGeoJSON === 'function') exportToGeoJSON(); });
 }
